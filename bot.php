@@ -55,12 +55,9 @@ $subscribers = getSubscribers();
 echo "[✓] Last processed block: " . ($lastBlock ?: 'None (will start fresh)') . "\n";
 echo "[✓] Active subscribers: " . count($subscribers) . "\n";
 
-// Set up commands menu in Telegram
-$commands = [
-    ['command' => 'start', 'description' => '🚀 Start the bot'],
-];
-telegramRequest('setMyCommands', ['commands' => json_encode($commands)]);
-echo "[✓] Bot commands menu updated\n\n";
+// Remove command menu from Telegram
+telegramRequest('deleteMyCommands', []);
+echo "[✓] Command menu removed\n\n";
 
 echo "[*] Starting main loop (Ctrl+C to stop)...\n\n";
 
