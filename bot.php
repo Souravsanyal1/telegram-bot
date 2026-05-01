@@ -7,6 +7,7 @@
  *   php bot.php --events - Runs only the event monitor
  *   php bot.php --both   - Runs both bot and event monitor
  * 
+ * Version: 1.0.1 (Force redeploy)
  * This bot tracks user IDs on the Tronex smart contract deployed on BSC.
  * It shows registration info, slot activations, level updates, and income data.
  */
