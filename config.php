@@ -44,8 +44,12 @@ define('LEVEL_PRICES', [
 // ─── BscScan Explorer ──────────────────────────────
 define('BSCSCAN_URL', 'https://bscscan.com');
 define('BSCSCAN_API_URL', 'https://api.bscscan.com/api');
-// Get a free API key from bscscan.com for higher rate limits
-define('BSCSCAN_API_KEY', '');
+// Free BscScan API key (get yours at bscscan.com/apis for higher limits)
+define('BSCSCAN_API_KEY', 'YourApiKeyToken');
+
+// ─── Render / Cloud Port ───────────────────────────
+// Render requires an open port for web services
+define('HEALTH_PORT', getenv('PORT') ?: 10000);
 
 // ─── Polling Interval (seconds) ────────────────────
 define('POLL_INTERVAL', 2);

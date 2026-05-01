@@ -145,9 +145,69 @@ function getBlockNumber() {
 }
 
 /**
- * Get logs for contract events
+ * Get logs for contract events using BscScan API (primary) or RPC (fallback)
  */
 function getLogs($fromBlock, $toBlock, $topics = []) {
+    // Try BscScan API first (much more reliable from cloud servers)
+    $result = getLogsBscScan($fromBlock, $toBlock);
+    if ($result !== null) {
+        return $result;
+    }
+
+    // Fallback to RPC
+    return getLogsRPC($fromBlock, $toBlock, $topics);
+}
+
+/**
+ * Get logs via BscScan API
+ */
+function getLogsBscScan($fromBlock, $toBlock) {
+    $params = [
+        'module' => 'logs',
+        'action' => 'getLogs',
+        'fromBlock' => $fromBlock,
+        'toBlock' => $toBlock,
+        'address' => CONTRACT_ADDRESS,
+        'apikey' => BSCSCAN_API_KEY,
+    ];
+
+    $url = BSCSCAN_API_URL . '?' . http_build_query($params);
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => false,
+    ]);
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        return null;
+    }
+
+    $data = json_decode($response, true);
+    if (!$data) return null;
+
+    // BscScan returns status "1" for success, "0" for no records
+    if (isset($data['status'])) {
+        if ($data['status'] === '1' && isset($data['result']) && is_array($data['result'])) {
+            return $data['result'];
+        }
+        if ($data['status'] === '0' && isset($data['message']) && $data['message'] === 'No records found') {
+            return []; // No events in this range — that's fine
+        }
+    }
+
+    return null; // API error, will try RPC fallback
+}
+
+/**
+ * Get logs via BSC RPC (fallback)
+ */
+function getLogsRPC($fromBlock, $toBlock, $topics = []) {
     $params = [
         'fromBlock' => '0x' . dechex($fromBlock),
         'toBlock' => '0x' . dechex($toBlock),

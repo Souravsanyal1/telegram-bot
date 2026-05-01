@@ -76,12 +76,47 @@ echo "[✓] Bot commands menu updated\n\n";
 
 echo "[*] Starting main loop (Ctrl+C to stop)...\n\n";
 
+// ── Start HTTP health check server for Render ──
+$healthServer = null;
+$port = HEALTH_PORT;
+$healthServer = @stream_socket_server("tcp://0.0.0.0:$port", $errno, $errstr);
+if ($healthServer) {
+    stream_set_blocking($healthServer, false);
+    echo "[✓] Health check server listening on port $port\n";
+} else {
+    echo "[!] Could not start health server on port $port: $errstr\n";
+}
+
 $offset = 0;
 $lastEventCheck = 0;
 
 // Main polling loop
 while (true) {
     try {
+        // ── 0. Handle health check requests (non-blocking) ──
+        if ($healthServer) {
+            $client = @stream_socket_accept($healthServer, 0);
+            if ($client) {
+                $stats = getGlobalStats();
+                $totalUsers = $stats ? $stats['totalUsers'] : '?';
+                $body = json_encode([
+                    'status' => 'ok',
+                    'bot' => '@' . ($botName ?? 'tronex_bot'),
+                    'totalUsers' => $totalUsers,
+                    'lastBlock' => getLastBlock(),
+                    'subscribers' => count(getSubscribers()),
+                    'uptime' => time(),
+                ]);
+                $response = "HTTP/1.1 200 OK\r\n"
+                          . "Content-Type: application/json\r\n"
+                          . "Content-Length: " . strlen($body) . "\r\n"
+                          . "Connection: close\r\n\r\n"
+                          . $body;
+                @fwrite($client, $response);
+                @fclose($client);
+            }
+        }
+
         // ── 1. Process Telegram messages (long-poll with short timeout) ──
         $updates = getUpdates($offset, 2);
 

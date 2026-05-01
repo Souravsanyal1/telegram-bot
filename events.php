@@ -26,9 +26,9 @@ function processEvents() {
         return;
     }
 
-    // Process in small chunks (10 blocks) to avoid free RPC rate limits
+    // Process in chunks (BscScan API handles larger ranges well)
     $fromBlock = $lastBlock + 1;
-    $toBlock = min($currentBlock, $fromBlock + 9);
+    $toBlock = min($currentBlock, $fromBlock + 99);
 
     // Filter for only the events we care about
     $eventTopics = [
