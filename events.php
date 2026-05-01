@@ -86,16 +86,22 @@ class EventMonitor {
      */
     public function getLastBlock() {
         if (!file_exists($this->lastBlockFile)) {
-            // Start from a recent block (get current - 100)
+            $lastBlock = 0;
+        } else {
+            $lastBlock = intval(trim(file_get_contents($this->lastBlockFile)));
+        }
+
+        // If last block is 0 or 1, start from the current block to avoid scanning the entire history
+        if ($lastBlock <= 1) {
             $current = $this->bc->getLatestBlock();
             if ($current) {
-                $startBlock = max(1, $current - 100);
+                $startBlock = max(1, $current - 10); // Start 10 blocks back to be safe
                 $this->saveLastBlock($startBlock);
                 return $startBlock;
             }
             return 0;
         }
-        return intval(trim(file_get_contents($this->lastBlockFile)));
+        return $lastBlock;
     }
     
     /**
