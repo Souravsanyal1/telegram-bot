@@ -7,6 +7,7 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/telegram.php';
 require_once __DIR__ . '/blockchain.php';
+require_once __DIR__ . '/database.php';
 
 class CommandHandler {
     
@@ -39,6 +40,9 @@ class CommandHandler {
     private function handleMessage($message) {
         $chatId = $message['chat']['id'];
         $text = trim($message['text'] ?? '');
+        
+        // Auto-subscribe user to notifications
+        Database::addSubscriber($chatId);
         
         // /start command
         if ($text === '/start') {

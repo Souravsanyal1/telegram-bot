@@ -20,6 +20,13 @@ define('BSCSCAN_API_URL', 'https://api.bscscan.com/api');
 define('BSCSCAN_API_KEY', ''); // Optional: Add your BSCScan API key for higher rate limits
 
 // ==========================================
+// MONGODB SETTINGS (For Cloud Persistence)
+// ==========================================
+define('USE_MONGODB', true); // Set to true to use MongoDB instead of local files
+define('MONGODB_URI', 'mongodb+srv://sourav_s:1233548sad45dsafr8a36@cluster0.v5m9kps.mongodb.net/?appName=Cluster0');
+define('MONGODB_DB', 'tronex_bot');
+
+// ==========================================
 // LEVEL PRICES (in USDT, 18 decimals on-chain)
 // ==========================================
 define('LEVEL_PRICES', [

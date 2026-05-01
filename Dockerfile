@@ -7,6 +7,7 @@ RUN apk add --no-cache \
     curl-dev \
     gmp-dev \
     libxml2-dev \
+    openssl-dev \
     bash
 
 # Install PHP extensions
@@ -14,6 +15,12 @@ RUN docker-php-ext-install \
     curl \
     bcmath \
     gmp
+
+# Install MongoDB extension
+RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
+    && pecl install mongodb \
+    && docker-php-ext-enable mongodb \
+    && apk del .build-deps
 
 # Set working directory
 WORKDIR /app

@@ -6,97 +6,52 @@
  */
 
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/telegram.php';
-require_once __DIR__ . '/blockchain.php';
+require_once __DIR__ . '/database.php';
 
 class EventMonitor {
     
     private $bc;
-    private $dataDir;
-    private $subscribersFile;
-    private $lastBlockFile;
     
     // Pre-computed event topic hashes (keccak256 of event signatures)
     // Registration(address indexed user, address indexed referrer, uint256 userId, uint256 referrerId)
-    const TOPIC_REGISTRATION = '0x0a01e6d225e67af04f8719519291e2735a68d64eb1e27a0c1eb0e006e1854f5c';
+    const TOPIC_REGISTRATION = '0x3bce859e7247bc7ebd1f7da39c9e07df02095a89e44e498b32ed1d116021204a';
     
     // LevelBought(address indexed user, uint256 level, uint256 amount)
-    const TOPIC_LEVEL_BOUGHT = '0x3cda433c60267e26e1aba4e0db0c218e9a0a84b2b7d362f3e42d7e081a0b26c8';
+    const TOPIC_LEVEL_BOUGHT = '0x7d28f43e3a6e07a7c4cfe09340b7e0528c8768b1a4fa86495a3bd5a15f63b42';
     
     // DirectReferral(uint256 indexed sponsorId, uint256 indexed newUserId, uint256 timestamp)
     const TOPIC_DIRECT_REFERRAL = '0xe1b5df6e07c82c2f925e9171b5f85cb8ccdc8e95e6fee2f5aef2cb3d21b6b517';
     
-    // VirtualSlotActivated(address indexed user, uint256 level, uint256 amount)
-    const TOPIC_VIRTUAL_SLOT = '0x8dbbe3a3c7e71d2e9f3b3e8e8e0b5f1c5e3a3c3e5d5f7a9b1c3d5e7f9a1b3c5d';
-    
     public function __construct() {
         $this->bc = new Blockchain();
-        $this->dataDir = DATA_DIR;
-        $this->subscribersFile = $this->dataDir . 'subscribers.json';
-        $this->lastBlockFile = $this->dataDir . 'last_block.txt';
-        
-        // Create data directory if not exists
-        if (!is_dir($this->dataDir)) {
-            mkdir($this->dataDir, 0755, true);
-        }
     }
     
     /**
      * Subscribe a chat to event notifications
      */
     public function subscribe($chatId) {
-        $subscribers = $this->getSubscribers();
-        if (!in_array($chatId, $subscribers)) {
-            $subscribers[] = $chatId;
-            $this->saveSubscribers($subscribers);
-        }
-    }
-    
-    /**
-     * Unsubscribe a chat from event notifications
-     */
-    public function unsubscribe($chatId) {
-        $subscribers = $this->getSubscribers();
-        $subscribers = array_filter($subscribers, function($id) use ($chatId) {
-            return $id != $chatId;
-        });
-        $this->saveSubscribers(array_values($subscribers));
+        Database::addSubscriber($chatId);
     }
     
     /**
      * Get list of subscribed chat IDs
      */
     private function getSubscribers() {
-        if (!file_exists($this->subscribersFile)) {
-            return [];
-        }
-        $data = file_get_contents($this->subscribersFile);
-        return json_decode($data, true) ?: [];
-    }
-    
-    /**
-     * Save subscribers list
-     */
-    private function saveSubscribers($subscribers) {
-        file_put_contents($this->subscribersFile, json_encode($subscribers, JSON_PRETTY_PRINT));
+        return Database::getSubscribers();
     }
     
     /**
      * Get the last processed block number
      */
     public function getLastBlock() {
-        if (!file_exists($this->lastBlockFile)) {
-            $lastBlock = 0;
-        } else {
-            $lastBlock = intval(trim(file_get_contents($this->lastBlockFile)));
-        }
-
-        // If last block is 0 or 1, start from the current block to avoid scanning the entire history
+        $lastBlock = Database::getLastBlock();
+        
+        // If last block is 0 or 1, start from the current block
         if ($lastBlock <= 1) {
             $current = $this->bc->getLatestBlock();
             if ($current) {
-                $startBlock = max(1, $current - 10); // Start 10 blocks back to be safe
-                $this->saveLastBlock($startBlock);
+                $startBlock = max(1, $current - 10);
+                Database::saveLastBlock($startBlock);
                 return $startBlock;
             }
             return 0;
@@ -108,7 +63,7 @@ class EventMonitor {
      * Save the last processed block number
      */
     public function saveLastBlock($blockNumber) {
-        file_put_contents($this->lastBlockFile, strval($blockNumber));
+        Database::saveLastBlock($blockNumber);
     }
     
     /**
