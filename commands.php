@@ -21,6 +21,9 @@ function handleUpdate($update) {
 /**
  * Handle text messages
  */
+// In-memory state for "waiting for ID" input
+$GLOBALS['waitingForId'] = [];
+
 function handleMessage($message) {
     $chatId = $message['chat']['id'];
     $text = trim($message['text'] ?? '');
@@ -28,8 +31,16 @@ function handleMessage($message) {
 
     if (empty($text)) return;
 
+    // Check if user is in "waiting for ID" state
+    if (isWaitingForId($chatId) && is_numeric($text)) {
+        clearWaitingForId($chatId);
+        handleTrackCommand($chatId, [$text]);
+        return;
+    }
+
     // Handle commands
     if (strpos($text, '/') === 0) {
+        clearWaitingForId($chatId);
         $parts = explode(' ', $text);
         $command = strtolower($parts[0]);
         $args = array_slice($parts, 1);
@@ -79,6 +90,30 @@ function handleMessage($message) {
                 break;
         }
     }
+}
+
+// ─── Waiting-for-ID state helpers ───
+function setWaitingForId($chatId) {
+    $file = DATA_DIR . '/waiting.json';
+    $data = file_exists($file) ? json_decode(file_get_contents($file), true) : [];
+    $data[(string)$chatId] = time();
+    file_put_contents($file, json_encode($data));
+}
+
+function isWaitingForId($chatId) {
+    $file = DATA_DIR . '/waiting.json';
+    if (!file_exists($file)) return false;
+    $data = json_decode(file_get_contents($file), true);
+    // Expire after 60 seconds
+    return isset($data[(string)$chatId]) && (time() - $data[(string)$chatId]) < 60;
+}
+
+function clearWaitingForId($chatId) {
+    $file = DATA_DIR . '/waiting.json';
+    if (!file_exists($file)) return;
+    $data = json_decode(file_get_contents($file), true);
+    unset($data[(string)$chatId]);
+    file_put_contents($file, json_encode($data));
 }
 
 /**
@@ -149,6 +184,17 @@ function handleCallbackQuery($query) {
                 . "Use /subscribe to re-enable.");
             break;
 
+        case 'add_id':
+            setWaitingForId($chatId);
+            answerCallback($callbackId);
+            sendMessage($chatId, "🔢 Send me the <b>User ID</b> you want to track:\n\n<i>Example: 42</i>");
+            break;
+
+        case 'see_all':
+            answerCallback($callbackId);
+            handleMyTracksCommand($chatId);
+            break;
+
         default:
             answerCallback($callbackId, "Unknown action");
             break;
@@ -160,36 +206,25 @@ function handleCallbackQuery($query) {
 // ─────────────────────────────────────────────────────
 
 function handleStartCommand($chatId, $firstName) {
-    $isSubbed = isSubscribed($chatId);
-    $subStatus = $isSubbed ? "✅ You are subscribed to live alerts" : "❌ Not subscribed to live alerts";
+    // Auto-subscribe on start
+    addSubscriber($chatId);
 
-    $text = "🚀 <b>Welcome to Tronex Bot, $firstName!</b>\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-          . "I monitor the <b>Tronex Smart Contract</b> on BSC and provide real-time notifications.\n\n"
-          . "📋 <b>What I can do:</b>\n\n"
-          . "🆕 <b>Registration Alerts</b>\n"
-          . "   New user registrations\n\n"
-          . "📊 <b>Slot & Level Tracking</b>\n"
-          . "   Which slot/level was activated\n\n"
-          . "💰 <b>Income Tracking</b>\n"
-          . "   Level-wise earnings & income\n\n"
-          . "👥 <b>Team Tracking</b>\n"
-          . "   Which level has new registrations\n\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-          . "$subStatus\n\n"
-          . "📌 <b>Contract:</b>\n"
-          . "<code>" . CONTRACT_ADDRESS . "</code>";
+    $tracked = getTrackedIds($chatId);
+    $count = count($tracked);
+
+    $text = "Welcome, <b>$firstName</b>! 👋\n\n";
+
+    if ($count > 0) {
+        $text .= "You are tracking <b>$count</b> ID(s).";
+    } else {
+        $text .= "Add a User ID to start getting alerts.";
+    }
 
     $keyboard = [
         'inline_keyboard' => [
             [
-                ['text' => '📊 Platform Stats', 'callback_data' => 'stats'],
-                ['text' => '💲 Level Prices', 'callback_data' => 'prices'],
-            ],
-            [
-                $isSubbed
-                    ? ['text' => '🔕 Unsubscribe', 'callback_data' => 'unsubscribe']
-                    : ['text' => '🔔 Subscribe Alerts', 'callback_data' => 'subscribe'],
+                ['text' => '➕ Add ID', 'callback_data' => 'add_id'],
+                ['text' => '📋 See All', 'callback_data' => 'see_all'],
             ],
         ],
     ];
