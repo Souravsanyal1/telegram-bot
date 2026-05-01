@@ -23,6 +23,18 @@ if (!is_dir(DATA_DIR)) {
     mkdir(DATA_DIR, 0755, true);
 }
 
+// ==============================
+// RENDER HEALTH CHECK SERVER
+// ==============================
+$port = getenv('PORT') ?: 8080;
+if (isset($argv[1]) && $argv[1] !== '--local') {
+    // Start a simple background HTTP server to keep Render happy
+    echo "[System] Starting health check server on port $port...\n";
+    $logFile = '/tmp/health_check.log';
+    shell_exec("php -S 0.0.0.0:$port -t /app > $logFile 2>&1 &");
+    file_put_contents('/app/index.php', '<?php echo "OK"; ?>');
+}
+
 // Parse command line arguments
 $mode = 'bot'; // default
 if (isset($argv[1])) {
