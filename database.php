@@ -33,16 +33,24 @@ class Database {
         if (USE_MONGODB) {
             $manager = self::getMongoClient();
             if ($manager) {
-                $bulk = new MongoDB\Driver\BulkWrite;
-                $bulk->update(['key' => 'last_block'], ['$set' => ['value' => (int)$blockNumber]], ['upsert' => true]);
-                $manager->executeBulkWrite(MONGODB_DB . '.settings', $bulk);
-                return;
+                try {
+                    $bulk = new MongoDB\Driver\BulkWrite;
+                    $bulk->update(['key' => 'last_block'], ['$set' => ['value' => (int)$blockNumber]], ['upsert' => true]);
+                    $manager->executeBulkWrite(MONGODB_DB . '.settings', $bulk);
+                    return;
+                } catch (Exception $e) {
+                    error_log("MongoDB saveLastBlock Error: " . $e->getMessage());
+                }
             }
         }
         
         // Fallback to local file
-        if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
-        file_put_contents(DATA_DIR . 'last_block.txt', (string)$blockNumber);
+        try {
+            if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
+            file_put_contents(DATA_DIR . 'last_block.txt', (string)$blockNumber);
+        } catch (Exception $e) {
+            error_log("File Save Error: " . $e->getMessage());
+        }
     }
     
     /**
@@ -52,10 +60,14 @@ class Database {
         if (USE_MONGODB) {
             $manager = self::getMongoClient();
             if ($manager) {
-                $query = new MongoDB\Driver\Query(['key' => 'last_block']);
-                $cursor = $manager->executeQuery(MONGODB_DB . '.settings', $query);
-                foreach ($cursor as $document) {
-                    return $document->value;
+                try {
+                    $query = new MongoDB\Driver\Query(['key' => 'last_block']);
+                    $cursor = $manager->executeQuery(MONGODB_DB . '.settings', $query);
+                    foreach ($cursor as $document) {
+                        return $document->value;
+                    }
+                } catch (Exception $e) {
+                    error_log("MongoDB getLastBlock Error: " . $e->getMessage());
                 }
             }
         }
@@ -75,10 +87,14 @@ class Database {
         if (USE_MONGODB) {
             $manager = self::getMongoClient();
             if ($manager) {
-                $bulk = new MongoDB\Driver\BulkWrite;
-                $bulk->update(['chat_id' => $chatId], ['$set' => ['chat_id' => $chatId]], ['upsert' => true]);
-                $manager->executeBulkWrite(MONGODB_DB . '.subscribers', $bulk);
-                return;
+                try {
+                    $bulk = new MongoDB\Driver\BulkWrite;
+                    $bulk->update(['chat_id' => (string)$chatId], ['$set' => ['chat_id' => (string)$chatId]], ['upsert' => true]);
+                    $manager->executeBulkWrite(MONGODB_DB . '.subscribers', $bulk);
+                    return;
+                } catch (Exception $e) {
+                    error_log("MongoDB addSubscriber Error: " . $e->getMessage());
+                }
             }
         }
         
@@ -97,13 +113,17 @@ class Database {
         if (USE_MONGODB) {
             $manager = self::getMongoClient();
             if ($manager) {
-                $query = new MongoDB\Driver\Query([]);
-                $cursor = $manager->executeQuery(MONGODB_DB . '.subscribers', $query);
-                $ids = [];
-                foreach ($cursor as $document) {
-                    $ids[] = $document->chat_id;
+                try {
+                    $query = new MongoDB\Driver\Query([]);
+                    $cursor = $manager->executeQuery(MONGODB_DB . '.subscribers', $query);
+                    $ids = [];
+                    foreach ($cursor as $document) {
+                        $ids[] = $document->chat_id;
+                    }
+                    return $ids;
+                } catch (Exception $e) {
+                    error_log("MongoDB getSubscribers Error: " . $e->getMessage());
                 }
-                return $ids;
             }
         }
         

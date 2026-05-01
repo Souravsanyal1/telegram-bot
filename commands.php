@@ -41,6 +41,8 @@ class CommandHandler {
         $chatId = $message['chat']['id'];
         $text = trim($message['text'] ?? '');
         
+        echo "[Bot] Received message from $chatId: $text\n";
+        
         // Auto-subscribe user to notifications
         Database::addSubscriber($chatId);
         
