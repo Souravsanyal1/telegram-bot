@@ -1,368 +1,283 @@
 <?php
 /**
- * Tronex Telegram Bot - Event Monitor
- * =====================================
- * Monitors BSC blockchain events and sends notifications.
+ * Tronex Bot - Event Monitor
+ * Monitors BSC blockchain for Registration, LevelBought, and DirectReferral events
+ * Sends notifications to subscribed Telegram chats
  */
 
-require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/telegram.php';
+require_once __DIR__ . '/blockchain.php';
 
-/**
- * Process new blockchain events and notify subscribers
- */
-function processEvents() {
-    $currentBlock = getBlockNumber();
-    $lastBlock = getLastBlock();
-
-    if ($lastBlock == 0) {
-        // First run: start from current block (only monitor new events)
-        $lastBlock = $currentBlock;
-        saveLastBlock($lastBlock);
-        logInfo("First run. Starting from current block $lastBlock");
-        return;
-    }
-
-    if ($currentBlock <= $lastBlock) {
-        return;
-    }
-
-    // Process in chunks (BscScan API handles larger ranges well)
-    $fromBlock = $lastBlock + 1;
-    $toBlock = min($currentBlock, $fromBlock + 99);
-
-    // Filter for only the events we care about
-    $eventTopics = [
-        [
-            EVENT_REGISTRATION,
-            EVENT_LEVEL_BOUGHT,
-            EVENT_VIRTUAL_SLOT,
-            EVENT_DIRECT_BONUS,
-            EVENT_GENERATION_BONUS,
-            EVENT_MISSED_COMMISSION,
-            EVENT_MATRIX_RECYCLED,
-            EVENT_ADMIN_GIFTED,
-            EVENT_DIRECT_REFERRAL,
-        ]
-    ];
-
-    $logs = getLogs($fromBlock, $toBlock, $eventTopics);
-
-    if ($logs === null) {
-        // RPC failure — skip these blocks and move on to avoid getting stuck
-        logError("Failed to fetch logs from block $fromBlock to $toBlock (skipping)");
-        saveLastBlock($toBlock);
-        return;
-    }
-
-    if (is_array($logs) && count($logs) > 0) {
-        logInfo("Processing " . count($logs) . " events from block $fromBlock to $toBlock");
-
-        foreach ($logs as $log) {
-            processEventLog($log);
+class EventMonitor {
+    
+    private $bc;
+    private $dataDir;
+    private $subscribersFile;
+    private $lastBlockFile;
+    
+    // Pre-computed event topic hashes (keccak256 of event signatures)
+    // Registration(address indexed user, address indexed referrer, uint256 userId, uint256 referrerId)
+    const TOPIC_REGISTRATION = '0x0a01e6d225e67af04f8719519291e2735a68d64eb1e27a0c1eb0e006e1854f5c';
+    
+    // LevelBought(address indexed user, uint256 level, uint256 amount)
+    const TOPIC_LEVEL_BOUGHT = '0x3cda433c60267e26e1aba4e0db0c218e9a0a84b2b7d362f3e42d7e081a0b26c8';
+    
+    // DirectReferral(uint256 indexed sponsorId, uint256 indexed newUserId, uint256 timestamp)
+    const TOPIC_DIRECT_REFERRAL = '0xe1b5df6e07c82c2f925e9171b5f85cb8ccdc8e95e6fee2f5aef2cb3d21b6b517';
+    
+    // VirtualSlotActivated(address indexed user, uint256 level, uint256 amount)
+    const TOPIC_VIRTUAL_SLOT = '0x8dbbe3a3c7e71d2e9f3b3e8e8e0b5f1c5e3a3c3e5d5f7a9b1c3d5e7f9a1b3c5d';
+    
+    public function __construct() {
+        $this->bc = new Blockchain();
+        $this->dataDir = DATA_DIR;
+        $this->subscribersFile = $this->dataDir . 'subscribers.json';
+        $this->lastBlockFile = $this->dataDir . 'last_block.txt';
+        
+        // Create data directory if not exists
+        if (!is_dir($this->dataDir)) {
+            mkdir($this->dataDir, 0755, true);
         }
     }
-
-    saveLastBlock($toBlock);
-}
-
-/**
- * Process a single event log and send notification
- */
-function processEventLog($log) {
-    if (!isset($log['topics']) || empty($log['topics'])) return;
-
-    $eventTopic = $log['topics'][0];
-    $txHash = $log['transactionHash'] ?? 'Unknown';
-    $data = $log['data'] ?? '0x';
-    $dataHex = substr($data, 2);
-
-    $message = null;
-    $involvedUserIds = []; // Tronex user IDs involved in this event
-
-    switch ($eventTopic) {
-        case EVENT_REGISTRATION:
-            $message = handleRegistrationEvent($log, $dataHex, $txHash);
-            // Extract userId and referrerId
-            $involvedUserIds[] = hexdec(substr($dataHex, 0, 64));
-            $involvedUserIds[] = hexdec(substr($dataHex, 64, 64));
-            break;
-
-        case EVENT_LEVEL_BOUGHT:
-            $message = handleLevelBoughtEvent($log, $dataHex, $txHash);
-            // Resolve wallet to userId
-            $addr = '0x' . substr($log['topics'][1], 26);
-            $u = getUserByAddress($addr);
-            if ($u) $involvedUserIds[] = $u['id'];
-            break;
-
-        case EVENT_VIRTUAL_SLOT:
-            $message = handleVirtualSlotEvent($log, $dataHex, $txHash);
-            $addr = '0x' . substr($log['topics'][1], 26);
-            $u = getUserByAddress($addr);
-            if ($u) $involvedUserIds[] = $u['id'];
-            break;
-
-        case EVENT_DIRECT_BONUS:
-            $message = handleDirectBonusEvent($log, $dataHex, $txHash);
-            // Receiver and buyer wallets
-            $recv = '0x' . substr($log['topics'][1], 26);
-            $buyer = '0x' . substr($log['topics'][2], 26);
-            $u1 = getUserByAddress($recv);
-            $u2 = getUserByAddress($buyer);
-            if ($u1) $involvedUserIds[] = $u1['id'];
-            if ($u2) $involvedUserIds[] = $u2['id'];
-            break;
-
-        case EVENT_GENERATION_BONUS:
-            $message = handleGenerationBonusEvent($log, $dataHex, $txHash);
-            $recv = '0x' . substr($log['topics'][1], 26);
-            $buyer = '0x' . substr($log['topics'][2], 26);
-            $u1 = getUserByAddress($recv);
-            $u2 = getUserByAddress($buyer);
-            if ($u1) $involvedUserIds[] = $u1['id'];
-            if ($u2) $involvedUserIds[] = $u2['id'];
-            break;
-
-        case EVENT_MISSED_COMMISSION:
-            $message = handleMissedCommissionEvent($log, $dataHex, $txHash);
-            $involvedUserIds[] = hexdec($log['topics'][1]);
-            break;
-
-        case EVENT_MATRIX_RECYCLED:
-            $message = handleMatrixRecycledEvent($log, $dataHex, $txHash);
-            $involvedUserIds[] = hexdec($log['topics'][1]);
-            break;
-
-        case EVENT_ADMIN_GIFTED:
-            $message = handleAdminGiftedEvent($log, $dataHex, $txHash);
-            $involvedUserIds[] = hexdec($log['topics'][1]);
-            break;
-
-        case EVENT_DIRECT_REFERRAL:
-            $message = handleDirectReferralEvent($log, $dataHex, $txHash);
-            $involvedUserIds[] = hexdec($log['topics'][1]); // sponsorId
-            $involvedUserIds[] = hexdec($log['topics'][2]); // newUserId
-            break;
+    
+    /**
+     * Subscribe a chat to event notifications
+     */
+    public function subscribe($chatId) {
+        $subscribers = $this->getSubscribers();
+        if (!in_array($chatId, $subscribers)) {
+            $subscribers[] = $chatId;
+            $this->saveSubscribers($subscribers);
+        }
     }
-
-    if ($message) {
-        smartBroadcast($message, $involvedUserIds);
+    
+    /**
+     * Unsubscribe a chat from event notifications
+     */
+    public function unsubscribe($chatId) {
+        $subscribers = $this->getSubscribers();
+        $subscribers = array_filter($subscribers, function($id) use ($chatId) {
+            return $id != $chatId;
+        });
+        $this->saveSubscribers(array_values($subscribers));
     }
-}
-
-// ─────────────────────────────────────────────────────
-// EVENT HANDLERS
-// ─────────────────────────────────────────────────────
-
-/**
- * Registration(address indexed user, address indexed referrer, uint256 userId, uint256 referrerId)
- */
-function handleRegistrationEvent($log, $dataHex, $txHash) {
-    $userAddr = '0x' . substr($log['topics'][1], 26);
-    $referrerAddr = '0x' . substr($log['topics'][2], 26);
-    $userId = hexdec(substr($dataHex, 0, 64));
-    $referrerId = hexdec(substr($dataHex, 64, 64));
-
-    // Get total users count
-    $stats = getGlobalStats();
-    $totalUsers = $stats ? $stats['totalUsers'] : $userId;
-
-    return "🆕 <b>NEW REGISTRATION!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "👤 User: " . addressLink($userAddr) . "\n"
-         . "🆔 User ID: <code>#$userId</code>\n"
-         . "👥 Referrer: " . addressLink($referrerAddr) . "\n"
-         . "🔗 Referrer ID: <code>#$referrerId</code>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "📊 Total Users: <b>$totalUsers</b>\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * LevelBought(address indexed user, uint256 level, uint256 amount)
- */
-function handleLevelBoughtEvent($log, $dataHex, $txHash) {
-    $userAddr = '0x' . substr($log['topics'][1], 26);
-    $level = hexdec(substr($dataHex, 0, 64));
-    $amount = formatUSDT(substr($dataHex, 64, 64));
-    $emoji = levelEmoji($level);
-    $price = LEVEL_PRICES[$level] ?? $amount;
-
-    // Try to get user info
-    $userInfo = getUserByAddress($userAddr);
-    $userId = $userInfo ? $userInfo['id'] : '?';
-    $activeLevels = $userInfo ? $userInfo['activeLevelsCount'] : $level;
-
-    return "$emoji <b>LEVEL $level ACTIVATED!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "👤 User: " . addressLink($userAddr) . "\n"
-         . "🆔 User ID: <code>#$userId</code>\n"
-         . "$emoji Level: <b>$level</b> ($price USDT)\n"
-         . "📊 Active Levels: <b>$activeLevels / 10</b>\n"
-         . "💰 Amount: <b>$amount USDT</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * VirtualSlotActivated(address indexed user, uint256 level, uint256 amount)
- */
-function handleVirtualSlotEvent($log, $dataHex, $txHash) {
-    $userAddr = '0x' . substr($log['topics'][1], 26);
-    $level = hexdec(substr($dataHex, 0, 64));
-    $amount = formatUSDT(substr($dataHex, 64, 64));
-    $emoji = levelEmoji($level);
-    $price = LEVEL_PRICES[$level] ?? $amount;
-
-    return "⚡ <b>SLOT ACTIVATED (Real Upgrade)!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "👤 User: " . addressLink($userAddr) . "\n"
-         . "$emoji Level: <b>$level</b> ($price USDT)\n"
-         . "💰 Amount: <b>$amount USDT</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * DirectBonusPaid(address indexed receiver, address indexed buyer, uint256 amount)
- */
-function handleDirectBonusEvent($log, $dataHex, $txHash) {
-    $receiverAddr = '0x' . substr($log['topics'][1], 26);
-    $buyerAddr = '0x' . substr($log['topics'][2], 26);
-    $amount = formatUSDT(substr($dataHex, 0, 64));
-
-    return "💵 <b>DIRECT BONUS PAID!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🎁 Receiver: " . addressLink($receiverAddr) . "\n"
-         . "🛒 From: " . addressLink($buyerAddr) . "\n"
-         . "💰 Amount: <b>$amount USDT</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * GenerationBonusPaid(address indexed receiver, address indexed buyer, uint256 level, uint256 amount)
- */
-function handleGenerationBonusEvent($log, $dataHex, $txHash) {
-    $receiverAddr = '0x' . substr($log['topics'][1], 26);
-    $buyerAddr = '0x' . substr($log['topics'][2], 26);
-    $genLevel = hexdec(substr($dataHex, 0, 64));
-    $amount = formatUSDT(substr($dataHex, 64, 64));
-
-    return "💎 <b>GENERATION BONUS PAID!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🎁 Receiver: " . addressLink($receiverAddr) . "\n"
-         . "🛒 From: " . addressLink($buyerAddr) . "\n"
-         . "📊 Generation: <b>$genLevel</b>\n"
-         . "💰 Amount: <b>$amount USDT</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * MissedCommission(uint256 indexed receiverId, uint256 level, uint256 amount)
- */
-function handleMissedCommissionEvent($log, $dataHex, $txHash) {
-    $receiverId = hexdec($log['topics'][1]);
-    $level = hexdec(substr($dataHex, 0, 64));
-    $amount = formatUSDT(substr($dataHex, 64, 64));
-    $emoji = levelEmoji($level);
-
-    return "⚠️ <b>MISSED COMMISSION!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🆔 User ID: <code>#$receiverId</code>\n"
-         . "$emoji Level: <b>$level</b>\n"
-         . "💸 Missed: <b>$amount USDT</b>\n"
-         . "ℹ️ <i>User doesn't own this level</i>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * MatrixRecycled(uint256 indexed userId, uint256 level, uint256 recycleCount)
- */
-function handleMatrixRecycledEvent($log, $dataHex, $txHash) {
-    $userId = hexdec($log['topics'][1]);
-    $level = hexdec(substr($dataHex, 0, 64));
-    $recycleCount = hexdec(substr($dataHex, 64, 64));
-    $emoji = levelEmoji($level);
-
-    return "♻️ <b>MATRIX RECYCLED!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🆔 User ID: <code>#$userId</code>\n"
-         . "$emoji Level: <b>$level</b>\n"
-         . "🔄 Recycle #: <b>$recycleCount</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * AdminGiftedSlot(uint256 indexed userId, uint256 level)
- */
-function handleAdminGiftedEvent($log, $dataHex, $txHash) {
-    $userId = hexdec($log['topics'][1]);
-    $level = hexdec(substr($dataHex, 0, 64));
-    $emoji = levelEmoji($level);
-
-    return "🎁 <b>ADMIN GIFTED SLOT!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🆔 User ID: <code>#$userId</code>\n"
-         . "$emoji Level: <b>$level</b> (Promo)\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-/**
- * DirectReferral(uint256 indexed sponsorId, uint256 indexed newUserId, uint256 timestamp)
- */
-function handleDirectReferralEvent($log, $dataHex, $txHash) {
-    $sponsorId = hexdec($log['topics'][1]);
-    $newUserId = hexdec($log['topics'][2]);
-
-    // Get sponsor info to show team count
-    $sponsorInfo = getUserInfo($sponsorId);
-    $teamCount = $sponsorInfo ? $sponsorInfo['directReferralsCount'] : '?';
-
-    return "👥 <b>NEW TEAM MEMBER!</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Sponsor ID: <code>#$sponsorId</code>\n"
-         . "🆕 New User ID: <code>#$newUserId</code>\n"
-         . "👥 Sponsor's Team: <b>$teamCount members</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 Tx: " . txLink($txHash);
-}
-
-// ─────────────────────────────────────────────────────
-// SMART BROADCAST
-// ─────────────────────────────────────────────────────
-
-/**
- * Smart broadcast: sends message only to chats that are tracking the involved user IDs.
- * If a chat has NO tracked IDs, they receive ALL events (global subscriber).
- * If a chat HAS tracked IDs, they ONLY receive events involving those specific IDs.
- *
- * @param string $message The formatted message to send
- * @param array $involvedUserIds Tronex user IDs involved in this event
- */
-function smartBroadcast($message, $involvedUserIds = []) {
-    $subscribers = getSubscribers();
-
-    foreach ($subscribers as $chatId) {
-        $trackedIds = getTrackedIds($chatId);
-
-        if (empty($trackedIds)) {
-            // No specific tracking — send ALL events
-            sendMessage($chatId, $message);
-        } else {
-            // Has tracked IDs — only send if event involves a tracked ID
-            foreach ($involvedUserIds as $uid) {
-                if (in_array((int)$uid, $trackedIds)) {
-                    sendMessage($chatId, $message);
-                    break; // send once per chat even if multiple IDs match
-                }
+    
+    /**
+     * Get list of subscribed chat IDs
+     */
+    private function getSubscribers() {
+        if (!file_exists($this->subscribersFile)) {
+            return [];
+        }
+        $data = file_get_contents($this->subscribersFile);
+        return json_decode($data, true) ?: [];
+    }
+    
+    /**
+     * Save subscribers list
+     */
+    private function saveSubscribers($subscribers) {
+        file_put_contents($this->subscribersFile, json_encode($subscribers, JSON_PRETTY_PRINT));
+    }
+    
+    /**
+     * Get the last processed block number
+     */
+    public function getLastBlock() {
+        if (!file_exists($this->lastBlockFile)) {
+            // Start from a recent block (get current - 100)
+            $current = $this->bc->getLatestBlock();
+            if ($current) {
+                $startBlock = max(1, $current - 100);
+                $this->saveLastBlock($startBlock);
+                return $startBlock;
+            }
+            return 0;
+        }
+        return intval(trim(file_get_contents($this->lastBlockFile)));
+    }
+    
+    /**
+     * Save the last processed block number
+     */
+    public function saveLastBlock($blockNumber) {
+        file_put_contents($this->lastBlockFile, strval($blockNumber));
+    }
+    
+    /**
+     * Main monitoring loop - scan for events and send notifications
+     */
+    public function pollEvents() {
+        $lastBlock = $this->getLastBlock();
+        $latestBlock = $this->bc->getLatestBlock();
+        
+        if ($latestBlock === null || $latestBlock <= $lastBlock) {
+            return;
+        }
+        
+        // Limit range to prevent timeout
+        $toBlock = min($latestBlock, $lastBlock + BLOCK_RANGE);
+        $fromBlock = $lastBlock + 1;
+        
+        if ($fromBlock > $toBlock) {
+            return;
+        }
+        
+        echo "[Event Monitor] Scanning blocks $fromBlock to $toBlock...\n";
+        
+        // Fetch all logs from the contract
+        $logs = $this->bc->getLogs($fromBlock, $toBlock);
+        
+        if (!empty($logs)) {
+            foreach ($logs as $log) {
+                $this->processLog($log);
             }
         }
-
-        usleep(100000); // 100ms delay between messages to avoid rate limits
+        
+        // Update last processed block
+        $this->saveLastBlock($toBlock);
+    }
+    
+    /**
+     * Process a single event log and send notification
+     */
+    private function processLog($log) {
+        $topics = $log['topics'] ?? [];
+        if (empty($topics)) return;
+        
+        $eventTopic = $topics[0];
+        $data = $log['data'] ?? '0x';
+        $txHash = $log['transactionHash'] ?? '';
+        $shortTx = substr($txHash, 0, 10) . '...' . substr($txHash, -6);
+        
+        $subscribers = $this->getSubscribers();
+        if (empty($subscribers)) return;
+        
+        $message = null;
+        
+        // Match event by topic hash
+        switch ($eventTopic) {
+            case self::TOPIC_REGISTRATION:
+                $message = $this->formatRegistrationEvent($topics, $data, $shortTx, $txHash);
+                break;
+                
+            case self::TOPIC_LEVEL_BOUGHT:
+                $message = $this->formatLevelBoughtEvent($topics, $data, $shortTx, $txHash);
+                break;
+                
+            case self::TOPIC_DIRECT_REFERRAL:
+                $message = $this->formatDirectReferralEvent($topics, $data, $shortTx, $txHash);
+                break;
+        }
+        
+        if ($message !== null) {
+            foreach ($subscribers as $chatId) {
+                TelegramAPI::sendMessage($chatId, $message);
+                usleep(100000); // 100ms delay to avoid rate limits
+            }
+        }
+    }
+    
+    /**
+     * Format Registration event notification
+     */
+    private function formatRegistrationEvent($topics, $data, $shortTx, $txHash) {
+        // topics[1] = indexed user address
+        // topics[2] = indexed referrer address
+        // data = userId (uint256) + referrerId (uint256)
+        
+        $dataHex = ltrim($data, '0x');
+        $userId = $this->hexToDec(substr($dataHex, 0, 64));
+        $referrerId = $this->hexToDec(substr($dataHex, 64, 64));
+        
+        $userAddr = '0x' . substr($topics[1] ?? '', 26);
+        $shortAddr = substr($userAddr, 0, 6) . '...' . substr($userAddr, -4);
+        
+        $msg  = "🆕 *NEW REGISTRATION*\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $msg .= "👤 New User ID: *#$userId*\n";
+        $msg .= "💳 Wallet: `$shortAddr`\n";
+        $msg .= "👥 Sponsor ID: *#$referrerId*\n";
+        $msg .= "🔗 [View TX](https://bscscan.com/tx/$txHash)\n\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        return $msg;
+    }
+    
+    /**
+     * Format LevelBought event notification
+     */
+    private function formatLevelBoughtEvent($topics, $data, $shortTx, $txHash) {
+        // topics[1] = indexed user address
+        // data = level (uint256) + amount (uint256)
+        
+        $dataHex = ltrim($data, '0x');
+        $level = $this->hexToDec(substr($dataHex, 0, 64));
+        $amountWei = $this->hexToDec(substr($dataHex, 64, 64));
+        $amount = $this->bc->formatUSDT($amountWei);
+        
+        $userAddr = '0x' . substr($topics[1] ?? '', 26);
+        $shortAddr = substr($userAddr, 0, 6) . '...' . substr($userAddr, -4);
+        
+        $msg  = "🎰 *SLOT ACTIVATED*\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $msg .= "👤 User: `$shortAddr`\n";
+        $msg .= "📊 Level: *$level* activated!\n";
+        $msg .= "💰 Amount: *\$$amount USDT*\n";
+        $msg .= "🔗 [View TX](https://bscscan.com/tx/$txHash)\n\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        return $msg;
+    }
+    
+    /**
+     * Format DirectReferral event notification
+     */
+    private function formatDirectReferralEvent($topics, $data, $shortTx, $txHash) {
+        // topics[1] = indexed sponsorId
+        // topics[2] = indexed newUserId
+        // data = timestamp (uint256)
+        
+        $sponsorId = $this->hexToDec(substr($topics[1] ?? '0x0', 2));
+        $newUserId = $this->hexToDec(substr($topics[2] ?? '0x0', 2));
+        
+        $msg  = "👥 *NEW DIRECT REFERRAL*\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $msg .= "👤 Sponsor ID: *#$sponsorId*\n";
+        $msg .= "🆕 New User ID: *#$newUserId*\n";
+        $msg .= "📝 Registered under Sponsor #$sponsorId\n";
+        $msg .= "🔗 [View TX](https://bscscan.com/tx/$txHash)\n\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        return $msg;
+    }
+    
+    /**
+     * Hex to decimal conversion
+     */
+    private function hexToDec($hex) {
+        $hex = ltrim($hex, '0');
+        if (empty($hex)) return '0';
+        
+        if (function_exists('gmp_init')) {
+            return gmp_strval(gmp_init($hex, 16));
+        }
+        
+        if (function_exists('bcmul')) {
+            $dec = '0';
+            $len = strlen($hex);
+            for ($i = 0; $i < $len; $i++) {
+                $dec = bcmul($dec, '16');
+                $dec = bcadd($dec, hexdec($hex[$i]));
+            }
+            return $dec;
+        }
+        
+        if (strlen($hex) <= 15) {
+            return strval(hexdec($hex));
+        }
+        
+        return '0';
     }
 }

@@ -1,640 +1,362 @@
 <?php
 /**
- * Tronex Telegram Bot - Command Handler
- * =======================================
- * Handles all bot commands and user interactions.
+ * Tronex Bot - Command Handlers
+ * Processes all user interactions: /start, ID tracking, callbacks
  */
 
-require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/telegram.php';
+require_once __DIR__ . '/blockchain.php';
 
-/**
- * Handle incoming Telegram update
- */
-function handleUpdate($update) {
-    if (isset($update['message'])) {
-        handleMessage($update['message']);
-    } elseif (isset($update['callback_query'])) {
-        handleCallbackQuery($update['callback_query']);
+class CommandHandler {
+    
+    private $bc;
+    
+    public function __construct() {
+        $this->bc = new Blockchain();
     }
-}
-
-/**
- * Handle text messages
- */
-// In-memory state for "waiting for ID" input
-$GLOBALS['waitingForId'] = [];
-
-function handleMessage($message) {
-    $chatId = $message['chat']['id'];
-    $text = trim($message['text'] ?? '');
-    $firstName = $message['from']['first_name'] ?? 'User';
-
-    if (empty($text)) return;
-
-    // Check if user is in "waiting for ID" state
-    if (isWaitingForId($chatId) && is_numeric($text)) {
-        clearWaitingForId($chatId);
-        handleTrackCommand($chatId, [$text]);
-        return;
-    }
-
-    // Handle commands
-    if (strpos($text, '/') === 0) {
-        clearWaitingForId($chatId);
-        $parts = explode(' ', $text);
-        $command = strtolower($parts[0]);
-
-        if ($command === '/start') {
-            handleStartCommand($chatId, $firstName);
+    
+    /**
+     * Process an incoming update from Telegram
+     */
+    public function handleUpdate($update) {
+        // Handle callback queries (button presses)
+        if (isset($update['callback_query'])) {
+            $this->handleCallback($update['callback_query']);
+            return;
+        }
+        
+        // Handle regular messages
+        if (isset($update['message'])) {
+            $this->handleMessage($update['message']);
+            return;
         }
     }
-}
-
-// ─── Waiting-for-ID state helpers ───
-function setWaitingForId($chatId) {
-    $file = DATA_DIR . '/waiting.json';
-    $data = file_exists($file) ? json_decode(file_get_contents($file), true) : [];
-    $data[(string)$chatId] = time();
-    file_put_contents($file, json_encode($data));
-}
-
-function isWaitingForId($chatId) {
-    $file = DATA_DIR . '/waiting.json';
-    if (!file_exists($file)) return false;
-    $data = json_decode(file_get_contents($file), true);
-    // Expire after 60 seconds
-    return isset($data[(string)$chatId]) && (time() - $data[(string)$chatId]) < 60;
-}
-
-function clearWaitingForId($chatId) {
-    $file = DATA_DIR . '/waiting.json';
-    if (!file_exists($file)) return;
-    $data = json_decode(file_get_contents($file), true);
-    unset($data[(string)$chatId]);
-    file_put_contents($file, json_encode($data));
-}
-
-/**
- * Handle callback query (inline button presses)
- */
-function handleCallbackQuery($query) {
-    $chatId = $query['message']['chat']['id'];
-    $messageId = $query['message']['message_id'];
-    $callbackId = $query['id'];
-    $data = $query['data'];
-
-    $parts = explode(':', $data);
-    $action = $parts[0];
-
-    switch ($action) {
-        case 'user':
-            $userId = (int)($parts[1] ?? 0);
-            if ($userId > 0) {
-                answerCallback($callbackId, "Loading user #$userId...");
-                $text = buildUserInfoMessage($userId);
-                editMessage($chatId, $messageId, $text);
-            }
-            break;
-
-        case 'levels':
-            $userId = (int)($parts[1] ?? 0);
-            if ($userId > 0) {
-                answerCallback($callbackId, "Loading levels...");
-                $text = buildLevelsMessage($userId);
-                editMessage($chatId, $messageId, $text);
-            }
-            break;
-
-        case 'income':
-            $userId = (int)($parts[1] ?? 0);
-            if ($userId > 0) {
-                answerCallback($callbackId, "Loading income...");
-                $text = buildIncomeMessage($userId);
-                editMessage($chatId, $messageId, $text);
-            }
-            break;
-
-        case 'stats':
-            answerCallback($callbackId, "Refreshing...");
-            $text = buildStatsMessage();
-            editMessage($chatId, $messageId, $text);
-            break;
-
-        case 'subscribe':
-            addSubscriber($chatId);
-            answerCallback($callbackId, "✅ Subscribed to live alerts!", true);
-            editMessage($chatId, $messageId,
-                "✅ <b>Subscribed!</b>\n\n"
-                . "You will now receive live notifications for:\n"
-                . "🆕 New registrations\n"
-                . "📊 Level activations\n"
-                . "💰 Income & bonuses\n"
-                . "♻️ Matrix recycles\n\n"
-                . "Use /unsubscribe to stop.");
-            break;
-
-        case 'unsubscribe':
-            removeSubscriber($chatId);
-            answerCallback($callbackId, "❌ Unsubscribed.", true);
-            editMessage($chatId, $messageId,
-                "❌ <b>Unsubscribed</b>\n\n"
-                . "You will no longer receive live event notifications.\n"
-                . "Use /subscribe to re-enable.");
-            break;
-
-        case 'add_id':
-            setWaitingForId($chatId);
-            answerCallback($callbackId);
-            $text = "<b>Add User ID</b>\n"
-                  . "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                  . "Send a Sponsor ID:\n"
-                  . "Format: <code>1</code>\n\n"
-                  . "You can track multiple IDs.";
-            $kb = [
-                'inline_keyboard' => [
-                    [['text' => '⬅️ Back', 'callback_data' => 'back_start']],
+    
+    /**
+     * Handle incoming text messages
+     */
+    private function handleMessage($message) {
+        $chatId = $message['chat']['id'];
+        $text = trim($message['text'] ?? '');
+        
+        // /start command
+        if ($text === '/start') {
+            $this->showStartMenu($chatId);
+            return;
+        }
+        
+        // If user sends a number, treat it as a Sponsor ID to track
+        if (is_numeric($text) && intval($text) > 0) {
+            $this->trackUserId($chatId, intval($text));
+            return;
+        }
+        
+        // Unknown input - show help
+        $this->showStartMenu($chatId);
+    }
+    
+    /**
+     * Show the /start welcome menu
+     */
+    private function showStartMenu($chatId) {
+        $text = "🚀 *TRONEX TRACKER BOT*\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $text .= "📊 *User ID Tracker*\n\n";
+        $text .= "Send a Sponsor ID:\n";
+        $text .= "Format: `1`\n\n";
+        $text .= "You can track multiple IDs\n\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '📊 Global Stats', 'callback_data' => 'global_stats']
                 ],
-            ];
-            sendMessage($chatId, $text, 'HTML', $kb);
-            break;
-
-        case 'back_start':
-            answerCallback($callbackId);
-            $firstName = $query['from']['first_name'] ?? 'User';
-            $tracked = getTrackedIds($chatId);
-            $count = count($tracked);
-            $text = "Welcome, <b>$firstName</b>! 👋\n\n";
-            if ($count > 0) {
-                $text .= "You are tracking <b>$count</b> ID(s).";
-            } else {
-                $text .= "Add a User ID to start getting alerts.";
-            }
-            $kb = [
+                [
+                    ['text' => '🔍 Track ID 1 (Admin)', 'callback_data' => 'track_1']
+                ]
+            ]
+        ];
+        
+        TelegramAPI::sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Track a user ID - fetch all data from blockchain
+     */
+    private function trackUserId($chatId, $userId, $messageId = null) {
+        // Send loading message
+        if ($messageId) {
+            TelegramAPI::editMessage($chatId, $messageId, "⏳ *Loading data from blockchain...*\nPlease wait...");
+        } else {
+            $loadingMsg = TelegramAPI::sendMessage($chatId, "⏳ *Loading data from blockchain...*\nPlease wait...");
+            $messageId = $loadingMsg['message_id'] ?? null;
+        }
+        
+        // Fetch user info from blockchain
+        $userInfo = $this->bc->getUserInfo($userId);
+        
+        if ($userInfo === null) {
+            $errorText = "❌ *User Not Found*\n\n";
+            $errorText .= "No user found with ID `$userId` on the Tronex contract.\n\n";
+            $errorText .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+            
+            $keyboard = [
                 'inline_keyboard' => [
                     [
-                        ['text' => '➕ Add ID', 'callback_data' => 'add_id'],
-                        ['text' => '📋 See All', 'callback_data' => 'see_all'],
-                    ],
-                ],
+                        ['text' => '🔙 Back to Menu', 'callback_data' => 'back_to_menu']
+                    ]
+                ]
             ];
-            editMessage($chatId, $messageId, $text, 'HTML', $kb);
-            break;
-
-        case 'see_all':
-            answerCallback($callbackId);
-            handleMyTracksCommand($chatId);
-            break;
-
-        default:
-            answerCallback($callbackId, "Unknown action");
-            break;
-    }
-}
-
-// ─────────────────────────────────────────────────────
-// COMMAND HANDLERS
-// ─────────────────────────────────────────────────────
-
-function handleStartCommand($chatId, $firstName) {
-    // Auto-subscribe on start
-    addSubscriber($chatId);
-
-    $tracked = getTrackedIds($chatId);
-    $count = count($tracked);
-
-    $text = "Welcome, <b>$firstName</b>! 👋\n\n";
-
-    if ($count > 0) {
-        $text .= "You are tracking <b>$count</b> ID(s).";
-    } else {
-        $text .= "Add a User ID to start getting alerts.";
-    }
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '➕ Add ID', 'callback_data' => 'add_id'],
-                ['text' => '📋 See All', 'callback_data' => 'see_all'],
-            ],
-        ],
-    ];
-
-    sendMessage($chatId, $text, 'HTML', $keyboard);
-}
-
-function handleHelpCommand($chatId) {
-    $text = "📖 <b>Tronex Bot Commands</b>\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-          . "🔍 <b>Lookup Commands:</b>\n"
-          . "/user <code>[ID]</code> — User info by ID\n"
-          . "/wallet <code>[address]</code> — User info by wallet\n"
-          . "/levels <code>[ID]</code> — User's level status\n"
-          . "/income <code>[ID]</code> — User's income details\n\n"
-          . "📊 <b>Platform Commands:</b>\n"
-          . "/stats — Global platform statistics\n"
-          . "/prices — Level prices table\n\n"
-          . "🔔 <b>Alert Commands:</b>\n"
-          . "/subscribe — Enable live event alerts (all)\n"
-          . "/unsubscribe — Disable live alerts\n\n"
-          . "🎯 <b>Track Specific IDs:</b>\n"
-          . "/track <code>[ID]</code> — Track a specific user ID\n"
-          . "/untrack <code>[ID]</code> — Stop tracking a user ID\n"
-          . "/mytracks — Show all tracked IDs\n\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-          . "💡 <b>Examples:</b>\n"
-          . "<code>/user 5</code>\n"
-          . "<code>/track 42</code> — only get alerts for user #42\n"
-          . "<code>/wallet 0x1234...abcd</code>\n"
-          . "<code>/levels 10</code>\n"
-          . "<code>/income 3</code>";
-
-    sendMessage($chatId, $text);
-}
-
-function handleStatsCommand($chatId) {
-    sendMessage($chatId, "⏳ Loading platform stats...");
-    $text = buildStatsMessage();
-    sendMessage($chatId, $text);
-}
-
-function handleUserCommand($chatId, $args) {
-    if (empty($args) || !is_numeric($args[0])) {
-        sendMessage($chatId, "⚠️ Usage: <code>/user [ID]</code>\nExample: <code>/user 5</code>");
-        return;
-    }
-
-    $userId = (int)$args[0];
-    sendMessage($chatId, "⏳ Loading user #$userId...");
-    $text = buildUserInfoMessage($userId);
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '📊 Levels', 'callback_data' => "levels:$userId"],
-                ['text' => '💰 Income', 'callback_data' => "income:$userId"],
-            ],
-        ],
-    ];
-
-    sendMessage($chatId, $text, 'HTML', $keyboard);
-}
-
-function handleWalletCommand($chatId, $args) {
-    if (empty($args) || strlen($args[0]) < 42) {
-        sendMessage($chatId, "⚠️ Usage: <code>/wallet [address]</code>\nExample: <code>/wallet 0x1234...abcd</code>");
-        return;
-    }
-
-    $address = $args[0];
-    sendMessage($chatId, "⏳ Looking up wallet...");
-    $user = getUserByAddress($address);
-
-    if (!$user) {
-        sendMessage($chatId, "❌ No user found with wallet:\n<code>$address</code>");
-        return;
-    }
-
-    $text = buildUserInfoMessage($user['id']);
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '📊 Levels', 'callback_data' => "levels:{$user['id']}"],
-                ['text' => '💰 Income', 'callback_data' => "income:{$user['id']}"],
-            ],
-        ],
-    ];
-
-    sendMessage($chatId, $text, 'HTML', $keyboard);
-}
-
-function handleLevelsCommand($chatId, $args) {
-    if (empty($args) || !is_numeric($args[0])) {
-        sendMessage($chatId, "⚠️ Usage: <code>/levels [ID]</code>\nExample: <code>/levels 5</code>");
-        return;
-    }
-
-    $userId = (int)$args[0];
-    sendMessage($chatId, "⏳ Loading levels for user #$userId...");
-    $text = buildLevelsMessage($userId);
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '👤 User Info', 'callback_data' => "user:$userId"],
-                ['text' => '💰 Income', 'callback_data' => "income:$userId"],
-            ],
-        ],
-    ];
-
-    sendMessage($chatId, $text, 'HTML', $keyboard);
-}
-
-function handleIncomeCommand($chatId, $args) {
-    if (empty($args) || !is_numeric($args[0])) {
-        sendMessage($chatId, "⚠️ Usage: <code>/income [ID]</code>\nExample: <code>/income 5</code>");
-        return;
-    }
-
-    $userId = (int)$args[0];
-    sendMessage($chatId, "⏳ Loading income for user #$userId...");
-    $text = buildIncomeMessage($userId);
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '👤 User Info', 'callback_data' => "user:$userId"],
-                ['text' => '📊 Levels', 'callback_data' => "levels:$userId"],
-            ],
-        ],
-    ];
-
-    sendMessage($chatId, $text, 'HTML', $keyboard);
-}
-
-function handleSubscribeCommand($chatId) {
-    if (isSubscribed($chatId)) {
-        sendMessage($chatId, "✅ You are already subscribed to live alerts!\nUse /unsubscribe to stop.");
-        return;
-    }
-
-    addSubscriber($chatId);
-    $text = "✅ <b>Subscribed to Live Alerts!</b>\n\n"
-          . "You will now receive notifications for:\n\n"
-          . "🆕 New user registrations\n"
-          . "📊 Level/Slot activations\n"
-          . "💰 Direct & generation bonuses\n"
-          . "♻️ Matrix recycles\n"
-          . "⚠️ Missed commissions\n"
-          . "🎁 Admin gifted slots\n\n"
-          . "Use /unsubscribe to stop notifications.";
-    sendMessage($chatId, $text);
-}
-
-function handleUnsubscribeCommand($chatId) {
-    if (!isSubscribed($chatId)) {
-        sendMessage($chatId, "❌ You are not subscribed.\nUse /subscribe to start receiving alerts.");
-        return;
-    }
-
-    removeSubscriber($chatId);
-    sendMessage($chatId, "🔕 <b>Unsubscribed from live alerts.</b>\n\nYou can re-subscribe anytime with /subscribe.");
-}
-
-function handlePricesCommand($chatId) {
-    $text = "💲 <b>Tronex Level Prices</b>\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-
-    $totalInvestment = 0;
-    foreach (LEVEL_PRICES as $level => $price) {
-        $emoji = levelEmoji($level);
-        $totalInvestment += $price;
-        $text .= "$emoji Level <b>$level</b>  →  <b>$price USDT</b>\n";
-    }
-
-    $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-           . "💎 <b>Total (All 10 Levels): $totalInvestment USDT</b>";
-
-    sendMessage($chatId, $text);
-}
-
-function handleTrackCommand($chatId, $args) {
-    if (empty($args) || !is_numeric($args[0])) {
-        sendMessage($chatId, "⚠️ Usage: <code>/track [ID]</code>\nExample: <code>/track 42</code>\n\nThis will send you alerts ONLY for that specific user ID.");
-        return;
-    }
-
-    $userId = (int)$args[0];
-
-    // Verify user exists
-    $user = getUserInfo($userId);
-    if (!$user) {
-        sendMessage($chatId, "❌ User #$userId not found on the contract.");
-        return;
-    }
-
-    if (addTrackedId($chatId, $userId)) {
-        // Auto-subscribe if not already
-        addSubscriber($chatId);
-
-        $tracked = getTrackedIds($chatId);
-        $count = count($tracked);
-
-        $text = "🎯 <b>Now Tracking User #$userId!</b>\n"
-              . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-              . "👤 Wallet: " . addressLink($user['wallet']) . "\n"
-              . "📊 Active Levels: <b>{$user['activeLevelsCount']} / 10</b>\n"
-              . "💰 Earnings: <b>{$user['totalEarnings']} USDT</b>\n\n"
-              . "You will receive alerts when:\n"
-              . "🆕 User #$userId registers someone\n"
-              . "📊 User #$userId buys a level\n"
-              . "💰 User #$userId receives bonus\n"
-              . "♻️ User #$userId matrix recycles\n\n"
-              . "📌 Total tracked IDs: <b>$count</b>\n"
-              . "Use /mytracks to see all.";
-        sendMessage($chatId, $text);
-    } else {
-        sendMessage($chatId, "ℹ️ You are already tracking user <b>#$userId</b>.\nUse /mytracks to see all tracked IDs.");
-    }
-}
-
-function handleUntrackCommand($chatId, $args) {
-    if (empty($args) || !is_numeric($args[0])) {
-        sendMessage($chatId, "⚠️ Usage: <code>/untrack [ID]</code>\nExample: <code>/untrack 42</code>");
-        return;
-    }
-
-    $userId = (int)$args[0];
-
-    if (removeTrackedId($chatId, $userId)) {
-        $remaining = getTrackedIds($chatId);
-        $count = count($remaining);
-        $text = "❌ <b>Stopped tracking User #$userId</b>\n\n";
-        if ($count > 0) {
-            $text .= "📌 Remaining tracked IDs: <b>$count</b>\nUse /mytracks to see all.";
-        } else {
-            $text .= "📌 No tracked IDs remaining.\nYou will now receive ALL event alerts (if subscribed).";
-        }
-        sendMessage($chatId, $text);
-    } else {
-        sendMessage($chatId, "ℹ️ You are not tracking user <b>#$userId</b>.\nUse /mytracks to see your tracked IDs.");
-    }
-}
-
-function handleMyTracksCommand($chatId) {
-    $tracked = getTrackedIds($chatId);
-
-    if (empty($tracked)) {
-        $text = "📋 <b>Your Tracked IDs</b>\n"
-              . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-              . "ℹ️ You are not tracking any specific IDs.\n"
-              . "You will receive ALL event alerts (if subscribed).\n\n"
-              . "💡 Use <code>/track [ID]</code> to track a specific user.\n"
-              . "Example: <code>/track 42</code>";
-        sendMessage($chatId, $text);
-        return;
-    }
-
-    $text = "🎯 <b>Your Tracked IDs</b> (" . count($tracked) . ")\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-
-    foreach ($tracked as $userId) {
-        $user = getUserInfo($userId);
-        if ($user) {
-            $text .= "🆔 <b>#$userId</b> — " . shortAddress($user['wallet'])
-                   . " | Lv.{$user['activeLevelsCount']} | {$user['totalEarnings']}$\n";
-        } else {
-            $text .= "🆔 <b>#$userId</b> — <i>info unavailable</i>\n";
-        }
-    }
-
-    $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-           . "➕ <code>/track [ID]</code> — add more\n"
-           . "➖ <code>/untrack [ID]</code> — remove";
-
-    sendMessage($chatId, $text);
-}
-
-// ─────────────────────────────────────────────────────
-// MESSAGE BUILDERS
-// ─────────────────────────────────────────────────────
-
-function buildStatsMessage() {
-    $stats = getGlobalStats();
-    if (!$stats) {
-        return "❌ Failed to fetch platform stats. Please try again.";
-    }
-
-    $lastUserId = getLastUserId();
-    $pauseStatus = $stats['isPaused'] ? "🔴 Paused" : "🟢 Active";
-
-    return "📊 <b>Tronex Platform Statistics</b>\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-         . "👥 Total Users: <b>{$stats['totalUsers']}</b>\n"
-         . "✅ Real Users: <b>{$stats['realUsers']}</b>\n"
-         . "🆔 Last User ID: <b>$lastUserId</b>\n"
-         . "📊 Status: <b>$pauseStatus</b>\n"
-         . "👑 Admin: " . addressLink($stats['adminAddress']) . "\n\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "📌 Contract: " . addressLink(CONTRACT_ADDRESS) . "\n"
-         . "🕐 Updated: " . date('Y-m-d H:i:s') . " UTC";
-}
-
-function buildUserInfoMessage($userId) {
-    $user = getUserInfo($userId);
-    if (!$user) {
-        return "❌ User #$userId not found.";
-    }
-
-    $promoTag = $user['isPromo'] ? " 🏷️ <i>Promo</i>" : "";
-    $realTag = $user['hasMadeRealPurchase'] ? "✅ Yes" : "❌ No";
-
-    return "👤 <b>User #$userId Info</b>$promoTag\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-         . "💼 Wallet: " . addressLink($user['wallet']) . "\n"
-         . "🔗 Referrer ID: <code>#{$user['referrerId']}</code>\n"
-         . "👥 Direct Referrals: <b>{$user['directReferralsCount']}</b>\n"
-         . "📊 Active Levels: <b>{$user['activeLevelsCount']} / 10</b>\n"
-         . "💰 Total Earnings: <b>{$user['totalEarnings']} USDT</b>\n"
-         . "🏷️ Real Purchase: $realTag\n\n"
-         . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-         . "🕐 Checked: " . date('H:i:s') . " UTC";
-}
-
-function buildLevelsMessage($userId) {
-    $user = getUserInfo($userId);
-    if (!$user) {
-        return "❌ User #$userId not found.";
-    }
-
-    $levels = getUserAllLevelsState($userId);
-    if (!$levels) {
-        return "❌ Failed to fetch levels for user #$userId.";
-    }
-
-    $text = "📊 <b>Levels Status — User #$userId</b>\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-
-    $maxActiveLevel = 0;
-    $totalLevelEarnings = '0';
-
-    foreach ($levels as $level => $info) {
-        $emoji = levelEmoji($level);
-        $price = LEVEL_PRICES[$level];
-
-        if ($info['unlocked']) {
-            $maxActiveLevel = $level;
-            $status = $info['isReal'] ? "✅ REAL" : "🎁 PROMO";
-            if ($info['isRefunded']) {
-                $status .= " 🔄 Refunded";
+            
+            if ($messageId) {
+                TelegramAPI::editMessage($chatId, $messageId, $errorText, $keyboard);
+            } else {
+                TelegramAPI::sendMessage($chatId, $errorText, $keyboard);
             }
+            return;
+        }
+        
+        // Fetch levels state
+        $levelsState = $this->bc->getUserAllLevelsState($userId);
+        
+        // Build the response message
+        $msg = $this->buildUserReport($userId, $userInfo, $levelsState);
+        
+        // Build keyboard with actions
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🔄 Refresh', 'callback_data' => 'track_' . $userId],
+                ],
+                [
+                    ['text' => '👤 Track Sponsor (ID: ' . $userInfo['referrerId'] . ')', 'callback_data' => 'track_' . $userInfo['referrerId']],
+                ],
+                [
+                    ['text' => '📊 Global Stats', 'callback_data' => 'global_stats'],
+                ],
+                [
+                    ['text' => '🔙 Back to Menu', 'callback_data' => 'back_to_menu'],
+                ]
+            ]
+        ];
+        
+        if ($messageId) {
+            TelegramAPI::editMessage($chatId, $messageId, $msg, $keyboard);
         } else {
-            $status = "🔒 Locked";
-        }
-
-        $earnings = $info['earnings'];
-        $totalLevelEarnings = bcadd($totalLevelEarnings, $earnings, 2);
-
-        $text .= "$emoji Lv.<b>$level</b> ($price$) → $status";
-        if ($info['unlocked'] && $earnings > 0) {
-            $text .= " | 💰 $earnings$";
-        }
-        $text .= "\n";
-    }
-
-    $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-           . "📊 Max Level: <b>$maxActiveLevel / 10</b>\n"
-           . "💰 Total Level Earnings: <b>$totalLevelEarnings USDT</b>";
-
-    return $text;
-}
-
-function buildIncomeMessage($userId) {
-    $user = getUserInfo($userId);
-    if (!$user) {
-        return "❌ User #$userId not found.";
-    }
-
-    $levels = getUserAllLevelsState($userId);
-    if (!$levels) {
-        return "❌ Failed to fetch income for user #$userId.";
-    }
-
-    $text = "💰 <b>Income Report — User #$userId</b>\n"
-          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-          . "💼 <b>Total Earnings: {$user['totalEarnings']} USDT</b>\n\n"
-          . "📊 <b>Level-wise Breakdown:</b>\n\n";
-
-    $hasIncome = false;
-    $maxIncomeLevel = 0;
-
-    foreach ($levels as $level => $info) {
-        $emoji = levelEmoji($level);
-        $price = LEVEL_PRICES[$level];
-        $earnings = $info['earnings'];
-
-        if ($earnings > 0) {
-            $hasIncome = true;
-            $maxIncomeLevel = $level;
-            $roi = ($price > 0) ? number_format(($earnings / $price) * 100, 1) : '0';
-            $text .= "$emoji Lv.<b>$level</b>: <b>$earnings USDT</b> (ROI: {$roi}%)\n";
+            TelegramAPI::sendMessage($chatId, $msg, $keyboard);
         }
     }
-
-    if (!$hasIncome) {
-        $text .= "ℹ️ <i>No income recorded yet</i>\n";
+    
+    /**
+     * Build formatted user report
+     */
+    private function buildUserReport($userId, $userInfo, $levelsState) {
+        $wallet = $userInfo['wallet'];
+        $shortWallet = substr($wallet, 0, 6) . '...' . substr($wallet, -4);
+        
+        $totalEarnings = $this->bc->formatUSDT($userInfo['totalEarnings']);
+        $activeLevels = $userInfo['activeLevelsCount'];
+        $directRefs = $userInfo['directReferralsCount'];
+        $referrerId = $userInfo['referrerId'];
+        $isPromo = $userInfo['isPromo'] ? '🎁 Promo' : '✅ Real';
+        $hasRealPurchase = $userInfo['hasMadeRealPurchase'] ? '✅ Yes' : '❌ No';
+        
+        $msg  = "🔍 *USER ID: $userId*\n";
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        
+        // Registration Info
+        $msg .= "📋 *Registration Info:*\n";
+        $msg .= "├ 💳 Wallet: `$shortWallet`\n";
+        $msg .= "├ 👤 Sponsor ID: `$referrerId`\n";
+        $msg .= "├ 🏷 Account Type: $isPromo\n";
+        $msg .= "└ 💰 Real Purchase: $hasRealPurchase\n\n";
+        
+        // Active Slots
+        $msg .= "🎰 *Slot Activation:*\n";
+        $msg .= "├ Active Slots: *$activeLevels / 10*\n";
+        
+        if ($levelsState !== null) {
+            $slotIcons = '';
+            for ($i = 1; $i <= 10; $i++) {
+                if (isset($levelsState['unlocked'][$i]) && $levelsState['unlocked'][$i]) {
+                    if (isset($levelsState['real'][$i]) && $levelsState['real'][$i]) {
+                        $slotIcons .= '🟢'; // Real active
+                    } else {
+                        $slotIcons .= '🟡'; // Virtual/Promo
+                    }
+                } else {
+                    $slotIcons .= '🔴'; // Inactive
+                }
+            }
+            $msg .= "└ Slots: $slotIcons\n\n";
+        } else {
+            $msg .= "\n";
+        }
+        
+        // Level Update Details
+        $msg .= "📊 *Level Details:*\n";
+        $prices = LEVEL_PRICES;
+        
+        if ($levelsState !== null) {
+            $totalLevelIncome = '0';
+            
+            for ($i = 1; $i <= 10; $i++) {
+                $price = $prices[$i];
+                $isUnlocked = isset($levelsState['unlocked'][$i]) && $levelsState['unlocked'][$i];
+                $isReal = isset($levelsState['real'][$i]) && $levelsState['real'][$i];
+                $isRefunded = isset($levelsState['refunded'][$i]) && $levelsState['refunded'][$i];
+                $earning = isset($levelsState['earnings'][$i]) ? $this->bc->formatUSDT($levelsState['earnings'][$i]) : '0.00';
+                
+                if ($isUnlocked) {
+                    $status = $isReal ? '🟢' : '🟡';
+                    $refStatus = $isRefunded ? ' 🔒Refunded' : '';
+                    $msg .= "├ $status L$i (\${$price}) - Income: \${$earning}$refStatus\n";
+                    
+                    if (function_exists('bcadd')) {
+                        $totalLevelIncome = bcadd($totalLevelIncome, $levelsState['earnings'][$i] ?? '0');
+                    }
+                } else {
+                    $msg .= "├ 🔴 L$i (\${$price}) - *Locked*\n";
+                }
+            }
+            $msg .= "\n";
+        }
+        
+        // Income Summary
+        $msg .= "💰 *Income Summary:*\n";
+        $msg .= "├ Total Earnings: *\${$totalEarnings} USDT*\n";
+        $msg .= "├ Direct Referrals: *$directRefs*\n";
+        
+        // Income level summary
+        if ($activeLevels > 0) {
+            $maxLevelPrice = $prices[$activeLevels] ?? 0;
+            $msg .= "└ Income up to Level: *$activeLevels* (\${$maxLevelPrice})\n\n";
+        } else {
+            $msg .= "└ Income up to Level: *None*\n\n";
+        }
+        
+        // Referral under levels
+        $msg .= "👥 *Registrations under Sponsor:*\n";
+        $msg .= "└ Direct Registrations: *$directRefs members*\n\n";
+        
+        $msg .= "━━━━━━━━━━━━━━━━━━━━━━━━\n";
+        $msg .= "🟢 Real | 🟡 Virtual/Promo | 🔴 Locked";
+        
+        return $msg;
     }
-
-    $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-
-    if ($maxIncomeLevel > 0) {
-        $text .= "📈 Income up to Level: <b>$maxIncomeLevel</b>\n";
+    
+    /**
+     * Handle callback queries (inline button presses)
+     */
+    private function handleCallback($callback) {
+        $chatId = $callback['message']['chat']['id'];
+        $messageId = $callback['message']['message_id'];
+        $data = $callback['data'];
+        $callbackId = $callback['id'];
+        
+        // Acknowledge the callback
+        TelegramAPI::answerCallback($callbackId);
+        
+        // Route based on callback data
+        if ($data === 'back_to_menu') {
+            $this->showStartMenuEdit($chatId, $messageId);
+            return;
+        }
+        
+        if ($data === 'global_stats') {
+            $this->showGlobalStats($chatId, $messageId);
+            return;
+        }
+        
+        if (strpos($data, 'track_') === 0) {
+            $userId = intval(substr($data, 6));
+            if ($userId > 0) {
+                $this->trackUserId($chatId, $userId, $messageId);
+            }
+            return;
+        }
     }
-
-    // Show which levels have new registrations (direct referrals)
-    $text .= "👥 Direct Referrals: <b>{$user['directReferralsCount']}</b>\n";
-    $text .= "📊 Active Levels: <b>{$user['activeLevelsCount']} / 10</b>\n";
-    $text .= "🕐 Checked: " . date('H:i:s') . " UTC";
-
-    return $text;
+    
+    /**
+     * Show start menu by editing an existing message
+     */
+    private function showStartMenuEdit($chatId, $messageId) {
+        $text = "🚀 *TRONEX TRACKER BOT*\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $text .= "📊 *User ID Tracker*\n\n";
+        $text .= "Send a Sponsor ID:\n";
+        $text .= "Format: `1`\n\n";
+        $text .= "You can track multiple IDs\n\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '📊 Global Stats', 'callback_data' => 'global_stats']
+                ],
+                [
+                    ['text' => '🔍 Track ID 1 (Admin)', 'callback_data' => 'track_1']
+                ]
+            ]
+        ];
+        
+        TelegramAPI::editMessage($chatId, $messageId, $text, $keyboard);
+    }
+    
+    /**
+     * Show global contract statistics
+     */
+    private function showGlobalStats($chatId, $messageId = null) {
+        $stats = $this->bc->getGlobalStats();
+        
+        if ($stats === null) {
+            $text = "❌ *Error fetching global stats*\n\nPlease try again later.";
+            $keyboard = [
+                'inline_keyboard' => [
+                    [['text' => '🔙 Back to Menu', 'callback_data' => 'back_to_menu']]
+                ]
+            ];
+            
+            if ($messageId) {
+                TelegramAPI::editMessage($chatId, $messageId, $text, $keyboard);
+            } else {
+                TelegramAPI::sendMessage($chatId, $text, $keyboard);
+            }
+            return;
+        }
+        
+        $totalUsers = $stats['totalUsers'];
+        $realUsers = $stats['realUsers'];
+        $isPaused = $stats['isPaused'] ? '🔴 Paused' : '🟢 Active';
+        $adminAddr = substr($stats['adminAddress'], 0, 6) . '...' . substr($stats['adminAddress'], -4);
+        
+        $text  = "📊 *TRONEX GLOBAL STATS*\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+        $text .= "👥 Total Registered: *$totalUsers*\n";
+        $text .= "💎 Real Users (Paid): *$realUsers*\n";
+        $text .= "🎁 Promo Accounts: *" . ($totalUsers - $realUsers) . "*\n";
+        $text .= "📡 Contract Status: $isPaused\n";
+        $text .= "👑 Admin: `$adminAddr`\n\n";
+        $text .= "🔗 Contract:\n`" . CONTRACT_ADDRESS . "`\n\n";
+        $text .= "━━━━━━━━━━━━━━━━━━━━━━━━";
+        
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🔄 Refresh', 'callback_data' => 'global_stats']
+                ],
+                [
+                    ['text' => '🔙 Back to Menu', 'callback_data' => 'back_to_menu']
+                ]
+            ]
+        ];
+        
+        if ($messageId) {
+            TelegramAPI::editMessage($chatId, $messageId, $text, $keyboard);
+        } else {
+            TelegramAPI::sendMessage($chatId, $text, $keyboard);
+        }
+    }
 }
