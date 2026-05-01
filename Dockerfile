@@ -1,26 +1,18 @@
 # Use PHP CLI image
 FROM php:8.2-cli-alpine
 
-# Install system dependencies for PHP extensions
+# Install system dependencies
 RUN apk add --no-cache \
-    libcurl \
-    curl-dev \
-    gmp-dev \
-    libxml2-dev \
-    openssl-dev \
-    bash
-
-# Install PHP extensions
-RUN docker-php-ext-install \
+    bash \
     curl \
-    bcmath \
-    gmp
+    git \
+    gmp-dev
 
-# Install MongoDB extension
-RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
-    && pecl install mongodb \
-    && docker-php-ext-enable mongodb \
-    && apk del .build-deps
+# Install PHP Extension Installer
+ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
+
+RUN chmod +x /usr/local/bin/install-php-extensions && \
+    install-php-extensions mongodb bcmath gmp curl
 
 # Set working directory
 WORKDIR /app
