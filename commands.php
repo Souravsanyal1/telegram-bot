@@ -43,51 +43,9 @@ function handleMessage($message) {
         clearWaitingForId($chatId);
         $parts = explode(' ', $text);
         $command = strtolower($parts[0]);
-        $args = array_slice($parts, 1);
 
-        switch ($command) {
-            case '/start':
-                handleStartCommand($chatId, $firstName);
-                break;
-            case '/help':
-                handleHelpCommand($chatId);
-                break;
-            case '/stats':
-                handleStatsCommand($chatId);
-                break;
-            case '/user':
-                handleUserCommand($chatId, $args);
-                break;
-            case '/wallet':
-                handleWalletCommand($chatId, $args);
-                break;
-            case '/levels':
-                handleLevelsCommand($chatId, $args);
-                break;
-            case '/income':
-                handleIncomeCommand($chatId, $args);
-                break;
-            case '/subscribe':
-                handleSubscribeCommand($chatId);
-                break;
-            case '/unsubscribe':
-                handleUnsubscribeCommand($chatId);
-                break;
-            case '/prices':
-                handlePricesCommand($chatId);
-                break;
-            case '/track':
-                handleTrackCommand($chatId, $args);
-                break;
-            case '/untrack':
-                handleUntrackCommand($chatId, $args);
-                break;
-            case '/mytracks':
-                handleMyTracksCommand($chatId);
-                break;
-            default:
-                sendMessage($chatId, "❓ Unknown command. Use /help to see available commands.");
-                break;
+        if ($command === '/start') {
+            handleStartCommand($chatId, $firstName);
         }
     }
 }

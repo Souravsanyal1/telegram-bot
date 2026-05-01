@@ -58,18 +58,6 @@ echo "[✓] Active subscribers: " . count($subscribers) . "\n";
 // Set up commands menu in Telegram
 $commands = [
     ['command' => 'start', 'description' => '🚀 Start the bot'],
-    ['command' => 'help', 'description' => '📖 Show all commands'],
-    ['command' => 'stats', 'description' => '📊 Platform statistics'],
-    ['command' => 'user', 'description' => '👤 Lookup user by ID'],
-    ['command' => 'wallet', 'description' => '💼 Lookup user by wallet'],
-    ['command' => 'levels', 'description' => '📊 User level status'],
-    ['command' => 'income', 'description' => '💰 User income report'],
-    ['command' => 'subscribe', 'description' => '🔔 Enable live alerts'],
-    ['command' => 'unsubscribe', 'description' => '🔕 Disable live alerts'],
-    ['command' => 'prices', 'description' => '💲 Level prices table'],
-    ['command' => 'track', 'description' => '🎯 Track specific user ID'],
-    ['command' => 'untrack', 'description' => '❌ Stop tracking a user ID'],
-    ['command' => 'mytracks', 'description' => '📋 Show tracked IDs'],
 ];
 telegramRequest('setMyCommands', ['commands' => json_encode($commands)]);
 echo "[✓] Bot commands menu updated\n\n";
