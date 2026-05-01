@@ -77,47 +77,76 @@ function processEventLog($log) {
     $dataHex = substr($data, 2);
 
     $message = null;
+    $involvedUserIds = []; // Tronex user IDs involved in this event
 
     switch ($eventTopic) {
         case EVENT_REGISTRATION:
             $message = handleRegistrationEvent($log, $dataHex, $txHash);
+            // Extract userId and referrerId
+            $involvedUserIds[] = hexdec(substr($dataHex, 0, 64));
+            $involvedUserIds[] = hexdec(substr($dataHex, 64, 64));
             break;
 
         case EVENT_LEVEL_BOUGHT:
             $message = handleLevelBoughtEvent($log, $dataHex, $txHash);
+            // Resolve wallet to userId
+            $addr = '0x' . substr($log['topics'][1], 26);
+            $u = getUserByAddress($addr);
+            if ($u) $involvedUserIds[] = $u['id'];
             break;
 
         case EVENT_VIRTUAL_SLOT:
             $message = handleVirtualSlotEvent($log, $dataHex, $txHash);
+            $addr = '0x' . substr($log['topics'][1], 26);
+            $u = getUserByAddress($addr);
+            if ($u) $involvedUserIds[] = $u['id'];
             break;
 
         case EVENT_DIRECT_BONUS:
             $message = handleDirectBonusEvent($log, $dataHex, $txHash);
+            // Receiver and buyer wallets
+            $recv = '0x' . substr($log['topics'][1], 26);
+            $buyer = '0x' . substr($log['topics'][2], 26);
+            $u1 = getUserByAddress($recv);
+            $u2 = getUserByAddress($buyer);
+            if ($u1) $involvedUserIds[] = $u1['id'];
+            if ($u2) $involvedUserIds[] = $u2['id'];
             break;
 
         case EVENT_GENERATION_BONUS:
             $message = handleGenerationBonusEvent($log, $dataHex, $txHash);
+            $recv = '0x' . substr($log['topics'][1], 26);
+            $buyer = '0x' . substr($log['topics'][2], 26);
+            $u1 = getUserByAddress($recv);
+            $u2 = getUserByAddress($buyer);
+            if ($u1) $involvedUserIds[] = $u1['id'];
+            if ($u2) $involvedUserIds[] = $u2['id'];
             break;
 
         case EVENT_MISSED_COMMISSION:
             $message = handleMissedCommissionEvent($log, $dataHex, $txHash);
+            $involvedUserIds[] = hexdec($log['topics'][1]);
             break;
 
         case EVENT_MATRIX_RECYCLED:
             $message = handleMatrixRecycledEvent($log, $dataHex, $txHash);
+            $involvedUserIds[] = hexdec($log['topics'][1]);
             break;
 
         case EVENT_ADMIN_GIFTED:
             $message = handleAdminGiftedEvent($log, $dataHex, $txHash);
+            $involvedUserIds[] = hexdec($log['topics'][1]);
             break;
 
         case EVENT_DIRECT_REFERRAL:
             $message = handleDirectReferralEvent($log, $dataHex, $txHash);
+            $involvedUserIds[] = hexdec($log['topics'][1]); // sponsorId
+            $involvedUserIds[] = hexdec($log['topics'][2]); // newUserId
             break;
     }
 
     if ($message) {
-        broadcastToSubscribers($message);
+        smartBroadcast($message, $involvedUserIds);
     }
 }
 
@@ -304,16 +333,36 @@ function handleDirectReferralEvent($log, $dataHex, $txHash) {
 }
 
 // ─────────────────────────────────────────────────────
-// BROADCAST
+// SMART BROADCAST
 // ─────────────────────────────────────────────────────
 
 /**
- * Send message to all subscribers
+ * Smart broadcast: sends message only to chats that are tracking the involved user IDs.
+ * If a chat has NO tracked IDs, they receive ALL events (global subscriber).
+ * If a chat HAS tracked IDs, they ONLY receive events involving those specific IDs.
+ *
+ * @param string $message The formatted message to send
+ * @param array $involvedUserIds Tronex user IDs involved in this event
  */
-function broadcastToSubscribers($message) {
+function smartBroadcast($message, $involvedUserIds = []) {
     $subscribers = getSubscribers();
+
     foreach ($subscribers as $chatId) {
-        sendMessage($chatId, $message);
+        $trackedIds = getTrackedIds($chatId);
+
+        if (empty($trackedIds)) {
+            // No specific tracking — send ALL events
+            sendMessage($chatId, $message);
+        } else {
+            // Has tracked IDs — only send if event involves a tracked ID
+            foreach ($involvedUserIds as $uid) {
+                if (in_array((int)$uid, $trackedIds)) {
+                    sendMessage($chatId, $message);
+                    break; // send once per chat even if multiple IDs match
+                }
+            }
+        }
+
         usleep(100000); // 100ms delay between messages to avoid rate limits
     }
 }

@@ -65,6 +65,15 @@ function handleMessage($message) {
             case '/prices':
                 handlePricesCommand($chatId);
                 break;
+            case '/track':
+                handleTrackCommand($chatId, $args);
+                break;
+            case '/untrack':
+                handleUntrackCommand($chatId, $args);
+                break;
+            case '/mytracks':
+                handleMyTracksCommand($chatId);
+                break;
             default:
                 sendMessage($chatId, "❓ Unknown command. Use /help to see available commands.");
                 break;
@@ -200,11 +209,16 @@ function handleHelpCommand($chatId) {
           . "/stats — Global platform statistics\n"
           . "/prices — Level prices table\n\n"
           . "🔔 <b>Alert Commands:</b>\n"
-          . "/subscribe — Enable live event alerts\n"
+          . "/subscribe — Enable live event alerts (all)\n"
           . "/unsubscribe — Disable live alerts\n\n"
+          . "🎯 <b>Track Specific IDs:</b>\n"
+          . "/track <code>[ID]</code> — Track a specific user ID\n"
+          . "/untrack <code>[ID]</code> — Stop tracking a user ID\n"
+          . "/mytracks — Show all tracked IDs\n\n"
           . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
           . "💡 <b>Examples:</b>\n"
           . "<code>/user 5</code>\n"
+          . "<code>/track 42</code> — only get alerts for user #42\n"
           . "<code>/wallet 0x1234...abcd</code>\n"
           . "<code>/levels 10</code>\n"
           . "<code>/income 3</code>";
@@ -355,6 +369,103 @@ function handlePricesCommand($chatId) {
 
     $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
            . "💎 <b>Total (All 10 Levels): $totalInvestment USDT</b>";
+
+    sendMessage($chatId, $text);
+}
+
+function handleTrackCommand($chatId, $args) {
+    if (empty($args) || !is_numeric($args[0])) {
+        sendMessage($chatId, "⚠️ Usage: <code>/track [ID]</code>\nExample: <code>/track 42</code>\n\nThis will send you alerts ONLY for that specific user ID.");
+        return;
+    }
+
+    $userId = (int)$args[0];
+
+    // Verify user exists
+    $user = getUserInfo($userId);
+    if (!$user) {
+        sendMessage($chatId, "❌ User #$userId not found on the contract.");
+        return;
+    }
+
+    if (addTrackedId($chatId, $userId)) {
+        // Auto-subscribe if not already
+        addSubscriber($chatId);
+
+        $tracked = getTrackedIds($chatId);
+        $count = count($tracked);
+
+        $text = "🎯 <b>Now Tracking User #$userId!</b>\n"
+              . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+              . "👤 Wallet: " . addressLink($user['wallet']) . "\n"
+              . "📊 Active Levels: <b>{$user['activeLevelsCount']} / 10</b>\n"
+              . "💰 Earnings: <b>{$user['totalEarnings']} USDT</b>\n\n"
+              . "You will receive alerts when:\n"
+              . "🆕 User #$userId registers someone\n"
+              . "📊 User #$userId buys a level\n"
+              . "💰 User #$userId receives bonus\n"
+              . "♻️ User #$userId matrix recycles\n\n"
+              . "📌 Total tracked IDs: <b>$count</b>\n"
+              . "Use /mytracks to see all.";
+        sendMessage($chatId, $text);
+    } else {
+        sendMessage($chatId, "ℹ️ You are already tracking user <b>#$userId</b>.\nUse /mytracks to see all tracked IDs.");
+    }
+}
+
+function handleUntrackCommand($chatId, $args) {
+    if (empty($args) || !is_numeric($args[0])) {
+        sendMessage($chatId, "⚠️ Usage: <code>/untrack [ID]</code>\nExample: <code>/untrack 42</code>");
+        return;
+    }
+
+    $userId = (int)$args[0];
+
+    if (removeTrackedId($chatId, $userId)) {
+        $remaining = getTrackedIds($chatId);
+        $count = count($remaining);
+        $text = "❌ <b>Stopped tracking User #$userId</b>\n\n";
+        if ($count > 0) {
+            $text .= "📌 Remaining tracked IDs: <b>$count</b>\nUse /mytracks to see all.";
+        } else {
+            $text .= "📌 No tracked IDs remaining.\nYou will now receive ALL event alerts (if subscribed).";
+        }
+        sendMessage($chatId, $text);
+    } else {
+        sendMessage($chatId, "ℹ️ You are not tracking user <b>#$userId</b>.\nUse /mytracks to see your tracked IDs.");
+    }
+}
+
+function handleMyTracksCommand($chatId) {
+    $tracked = getTrackedIds($chatId);
+
+    if (empty($tracked)) {
+        $text = "📋 <b>Your Tracked IDs</b>\n"
+              . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+              . "ℹ️ You are not tracking any specific IDs.\n"
+              . "You will receive ALL event alerts (if subscribed).\n\n"
+              . "💡 Use <code>/track [ID]</code> to track a specific user.\n"
+              . "Example: <code>/track 42</code>";
+        sendMessage($chatId, $text);
+        return;
+    }
+
+    $text = "🎯 <b>Your Tracked IDs</b> (" . count($tracked) . ")\n"
+          . "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+
+    foreach ($tracked as $userId) {
+        $user = getUserInfo($userId);
+        if ($user) {
+            $text .= "🆔 <b>#$userId</b> — " . shortAddress($user['wallet'])
+                   . " | Lv.{$user['activeLevelsCount']} | {$user['totalEarnings']}$\n";
+        } else {
+            $text .= "🆔 <b>#$userId</b> — <i>info unavailable</i>\n";
+        }
+    }
+
+    $text .= "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+           . "➕ <code>/track [ID]</code> — add more\n"
+           . "➖ <code>/untrack [ID]</code> — remove";
 
     sendMessage($chatId, $text);
 }

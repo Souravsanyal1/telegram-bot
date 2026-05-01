@@ -67,6 +67,9 @@ $commands = [
     ['command' => 'subscribe', 'description' => '🔔 Enable live alerts'],
     ['command' => 'unsubscribe', 'description' => '🔕 Disable live alerts'],
     ['command' => 'prices', 'description' => '💲 Level prices table'],
+    ['command' => 'track', 'description' => '🎯 Track specific user ID'],
+    ['command' => 'untrack', 'description' => '❌ Stop tracking a user ID'],
+    ['command' => 'mytracks', 'description' => '📋 Show tracked IDs'],
 ];
 telegramRequest('setMyCommands', ['commands' => json_encode($commands)]);
 echo "[✓] Bot commands menu updated\n\n";

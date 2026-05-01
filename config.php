@@ -56,6 +56,7 @@ define('DATA_DIR', __DIR__ . '/data');
 define('LAST_BLOCK_FILE', DATA_DIR . '/last_block.txt');
 define('SUBSCRIBERS_FILE', DATA_DIR . '/subscribers.json');
 define('USER_SETTINGS_FILE', DATA_DIR . '/user_settings.json');
+define('TRACKED_IDS_FILE', DATA_DIR . '/tracked_ids.json');
 
 // Create data directory if it doesn't exist
 if (!is_dir(DATA_DIR)) {

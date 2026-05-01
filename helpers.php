@@ -408,6 +408,105 @@ function isSubscribed($chatId) {
 }
 
 // ─────────────────────────────────────────────────────
+// TRACKED USER IDS (per-chat)
+// ─────────────────────────────────────────────────────
+
+/**
+ * Get all tracked IDs data: { chatId => [userId1, userId2, ...], ... }
+ */
+function getAllTrackedIds() {
+    if (file_exists(TRACKED_IDS_FILE)) {
+        $data = json_decode(file_get_contents(TRACKED_IDS_FILE), true);
+        return is_array($data) ? $data : [];
+    }
+    return [];
+}
+
+/**
+ * Save all tracked IDs data
+ */
+function saveAllTrackedIds($data) {
+    file_put_contents(TRACKED_IDS_FILE, json_encode($data, JSON_PRETTY_PRINT));
+}
+
+/**
+ * Get tracked user IDs for a specific chat
+ */
+function getTrackedIds($chatId) {
+    $all = getAllTrackedIds();
+    $key = (string)$chatId;
+    return isset($all[$key]) && is_array($all[$key]) ? $all[$key] : [];
+}
+
+/**
+ * Add a Tronex user ID to a chat's tracking list
+ */
+function addTrackedId($chatId, $userId) {
+    $all = getAllTrackedIds();
+    $key = (string)$chatId;
+    if (!isset($all[$key])) {
+        $all[$key] = [];
+    }
+    $userId = (int)$userId;
+    if (!in_array($userId, $all[$key])) {
+        $all[$key][] = $userId;
+        saveAllTrackedIds($all);
+        return true;
+    }
+    return false; // already tracked
+}
+
+/**
+ * Remove a Tronex user ID from a chat's tracking list
+ */
+function removeTrackedId($chatId, $userId) {
+    $all = getAllTrackedIds();
+    $key = (string)$chatId;
+    if (!isset($all[$key])) return false;
+    $userId = (int)$userId;
+    $pos = array_search($userId, $all[$key]);
+    if ($pos !== false) {
+        unset($all[$key][$pos]);
+        $all[$key] = array_values($all[$key]);
+        if (empty($all[$key])) unset($all[$key]);
+        saveAllTrackedIds($all);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Check if a chat is tracking a specific user ID
+ */
+function isTrackingUser($chatId, $userId) {
+    $ids = getTrackedIds($chatId);
+    return in_array((int)$userId, $ids);
+}
+
+/**
+ * Get all chat IDs that are tracking a given Tronex user ID
+ */
+function getChatsTrackingUser($userId) {
+    $all = getAllTrackedIds();
+    $userId = (int)$userId;
+    $chats = [];
+    foreach ($all as $chatId => $ids) {
+        if (in_array($userId, $ids)) {
+            $chats[] = $chatId;
+        }
+    }
+    return $chats;
+}
+
+/**
+ * Check if a chat has any tracked IDs
+ */
+function hasTrackedIds($chatId) {
+    $ids = getTrackedIds($chatId);
+    return !empty($ids);
+}
+
+// ─────────────────────────────────────────────────────
 // FORMATTING HELPERS
 // ─────────────────────────────────────────────────────
 
