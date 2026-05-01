@@ -187,7 +187,39 @@ function handleCallbackQuery($query) {
         case 'add_id':
             setWaitingForId($chatId);
             answerCallback($callbackId);
-            sendMessage($chatId, "🔢 Send me the <b>User ID</b> you want to track:\n\n<i>Example: 42</i>");
+            $text = "<b>Add User ID</b>\n"
+                  . "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                  . "Send a Sponsor ID:\n"
+                  . "Format: <code>1</code>\n\n"
+                  . "You can track multiple IDs.";
+            $kb = [
+                'inline_keyboard' => [
+                    [['text' => '⬅️ Back', 'callback_data' => 'back_start']],
+                ],
+            ];
+            sendMessage($chatId, $text, 'HTML', $kb);
+            break;
+
+        case 'back_start':
+            answerCallback($callbackId);
+            $firstName = $query['from']['first_name'] ?? 'User';
+            $tracked = getTrackedIds($chatId);
+            $count = count($tracked);
+            $text = "Welcome, <b>$firstName</b>! 👋\n\n";
+            if ($count > 0) {
+                $text .= "You are tracking <b>$count</b> ID(s).";
+            } else {
+                $text .= "Add a User ID to start getting alerts.";
+            }
+            $kb = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => '➕ Add ID', 'callback_data' => 'add_id'],
+                        ['text' => '📋 See All', 'callback_data' => 'see_all'],
+                    ],
+                ],
+            ];
+            editMessage($chatId, $messageId, $text, 'HTML', $kb);
             break;
 
         case 'see_all':
