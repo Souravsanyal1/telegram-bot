@@ -9,6 +9,13 @@ require_once __DIR__ . '/config.php';
 class TelegramAPI {
     
     /**
+     * Get information about the bot
+     */
+    public static function getMe() {
+        return self::request('getMe');
+    }
+
+    /**
      * Send a message to a chat
      */
     public static function sendMessage($chatId, $text, $replyMarkup = null, $parseMode = 'Markdown') {

@@ -60,7 +60,7 @@ define('EVENT_DIRECT_REFERRAL', '0x' . hash('sha3-256', 'DirectReferral(uint256,
 // Registration(address indexed user, address indexed referrer, uint256 userId, uint256 referrerId)
 define('TOPIC_REGISTRATION', '0x3bce859e7247bc7ebd1f7da39c9e07df02095a89e44e498b32ed1d116021204a');
 // LevelBought(address indexed user, uint256 level, uint256 amount)
-define('TOPIC_LEVEL_BOUGHT', '0x7d28f43e3a6e07a7c4cfe09340b7e0528c8768b1a4fa8tried5a3bd5a15f63b42');
+define('TOPIC_LEVEL_BOUGHT', '0x7d28f43e3a6e07a7c4cfe09340b7e0528c8768b1a4fa86495a3bd5a15f63b42');
 // DirectReferral(uint256 indexed sponsorId, uint256 indexed newUserId, uint256 timestamp)
 define('TOPIC_DIRECT_REFERRAL', '0xe1b5df6e07c82c2f925e9171b5f85cb8ccdc8e95e6fee2f5aef2cb3d21b6b517');
 

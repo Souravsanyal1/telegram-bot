@@ -58,6 +58,29 @@ echo "  Contract: " . CONTRACT_ADDRESS . "\n";
 echo "  BSC RPC: " . BSC_RPC_URL . "\n";
 echo "========================================\n\n";
 
+// ==============================
+// STARTUP VALIDATION
+// ==============================
+echo "[System] Validating connection to services...\n";
+
+// 1. Validate Telegram Bot
+$me = TelegramAPI::getMe();
+if (!$me) {
+    echo "❌ ERROR: Could not connect to Telegram! Check your BOT_TOKEN in config.php.\n";
+    exit(1);
+}
+echo "✅ Telegram: Connected as @" . $me['username'] . " (" . $me['first_name'] . ")\n";
+
+// 2. Validate Database
+if (USE_MONGODB) {
+    echo "[System] Connecting to MongoDB...\n";
+    // Check if MongoDB extension is loaded
+    if (!extension_loaded('mongodb')) {
+        echo "❌ ERROR: MongoDB PHP extension is not loaded!\n";
+        exit(1);
+    }
+}
+
 // Set up bot commands menu
 TelegramAPI::setMyCommands();
 
